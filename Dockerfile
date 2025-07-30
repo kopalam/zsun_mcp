@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 COPY app/ /app/
 
 # 安装 Python 依赖
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e . -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # 暴露端口（如果需要的话）
 EXPOSE 8010
