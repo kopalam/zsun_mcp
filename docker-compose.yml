@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  fastmcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastmcp
+    volumes:
+      - ./app:/app
+    ports:
+      - "8010:8010"
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      - FASTMCP_LOG_LEVEL=INFO
+      - FASTMCP_ENABLE_RICH_TRACEBACKS=1
+      - FASTMCP_TRANSPORT=sse
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3 
