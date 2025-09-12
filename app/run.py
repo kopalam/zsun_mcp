@@ -23,7 +23,7 @@ try:
 except ImportError:
     UVLOOP_AVAILABLE = False
 
-from plugins import weather_plugin
+from plugins import weather_plugin, time_plugin
 from core.connection_manager import connection_manager
 from handlers.websocket_handler import websocket_handler
 from utils.jsonrpc import JSONRPCProtocol
@@ -67,6 +67,9 @@ class FastMCPAPIServer:
         
         # Register weather plugin
         self._register_plugin(weather_plugin)
+        
+        # Register time plugin
+        self._register_plugin(time_plugin)
         
         logger.info(f"Registered {len(self.plugins)} plugins")
 
