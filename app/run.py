@@ -384,8 +384,8 @@ def main():
     parser.add_argument(
         "--port",
         type=int,
-        default=8010,
-        help="Port to bind the server to (default: 8010)"
+        default=7100,
+        help="Port to bind the server to (default: 7100)"
     )
     
     args = parser.parse_args()

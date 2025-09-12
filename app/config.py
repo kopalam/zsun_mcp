@@ -13,7 +13,7 @@ class Config:
     def __init__(self):
         # 服务器配置
         self.host = os.getenv("HOST", "0.0.0.0")
-        self.port = int(os.getenv("PORT", "8010"))
+        self.port = int(os.getenv("PORT", "7100"))
         self.debug = os.getenv("DEBUG", "false").lower() == "true"
         
         # WebSocket配置

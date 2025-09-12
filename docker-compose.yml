@@ -9,8 +9,8 @@ services:
     volumes:
       - ./app:/app
     ports:
-      - "8010:8010"
-    command: ["python", "run.py", "--transport", "dual", "--host", "0.0.0.0", "--port", "8010"]
+      - "7100:7100"
+    command: ["python", "run.py", "--transport", "dual", "--host", "0.0.0.0", "--port", "7100"]
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
