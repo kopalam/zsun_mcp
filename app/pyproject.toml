@@ -17,6 +17,7 @@ dependencies = [
     "openapi-core>=0.19.5",
     "fastapi>=0.115.12",
     "uvicorn[standard]>=0.30.0",
+    "pytz>=2024.1",
 ]
 
 requires-python = ">=3.10"
