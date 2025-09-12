@@ -121,9 +121,10 @@ async def test_call_tool(fastmcp_server):
     async with client:
         result = await client.call_tool("greet", {"name": "World"})
 
-        # The result content should contain our greeting
-        content_str = str(result[0])
-        assert "Hello, World!" in content_str
+        assert result.content[0].text == "Hello, World!"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": "Hello, World!"}
+        assert result.data == "Hello, World!"
+        assert result.is_error is False
 
 
 async def test_call_tool_mcp(fastmcp_server):
@@ -218,6 +219,101 @@ async def test_get_prompt_mcp(fastmcp_server):
         # The result should contain our welcome message
         assert result.messages[0].content.text == "Welcome to FastMCP, Developer!"  # type: ignore[attr-defined]
         assert result.description == "Example greeting prompt."
+
+
+async def test_client_serializes_all_non_string_arguments():
+    """Test that client always serializes non-string arguments to JSON, regardless of server types."""
+    server = FastMCP("TestServer")
+
+    @server.prompt
+    def echo_args(arg1: str, arg2: str, arg3: str) -> str:
+        """Server accepts all string args but client sends mixed types."""
+        return f"arg1: {arg1}, arg2: {arg2}, arg3: {arg3}"
+
+    client = Client(transport=FastMCPTransport(server))
+
+    async with client:
+        result = await client.get_prompt(
+            "echo_args",
+            {
+                "arg1": "hello",  # string - should pass through
+                "arg2": [1, 2, 3],  # list - should be JSON serialized
+                "arg3": {"key": "value"},  # dict - should be JSON serialized
+            },
+        )
+
+        content = result.messages[0].content.text  # type: ignore[attr-defined]
+        assert "arg1: hello" in content
+        assert "arg2: [1,2,3]" in content  # JSON serialized list
+        assert 'arg3: {"key":"value"}' in content  # JSON serialized dict
+
+
+async def test_client_server_type_conversion_integration():
+    """Test that client serialization works with server-side type conversion."""
+    server = FastMCP("TestServer")
+
+    @server.prompt
+    def typed_prompt(numbers: list[int], config: dict[str, str]) -> str:
+        """Server expects typed args - will convert from JSON strings."""
+        return f"Got {len(numbers)} numbers and {len(config)} config items"
+
+    client = Client(transport=FastMCPTransport(server))
+
+    async with client:
+        result = await client.get_prompt(
+            "typed_prompt",
+            {"numbers": [1, 2, 3, 4], "config": {"theme": "dark", "lang": "en"}},
+        )
+
+        content = result.messages[0].content.text  # type: ignore[attr-defined]
+        assert "Got 4 numbers and 2 config items" in content
+
+
+async def test_client_serialization_error():
+    """Test client error when object cannot be serialized."""
+    import pydantic_core
+
+    server = FastMCP("TestServer")
+
+    @server.prompt
+    def any_prompt(data: str) -> str:
+        return f"Got: {data}"
+
+    # Create an unserializable object
+    class UnserializableClass:
+        def __init__(self):
+            self.func = lambda x: x  # functions can't be JSON serialized
+
+    client = Client(transport=FastMCPTransport(server))
+
+    async with client:
+        with pytest.raises(
+            pydantic_core.PydanticSerializationError, match="Unable to serialize"
+        ):
+            await client.get_prompt("any_prompt", {"data": UnserializableClass()})
+
+
+async def test_server_deserialization_error():
+    """Test server error when JSON string cannot be converted to expected type."""
+    from mcp import McpError
+
+    server = FastMCP("TestServer")
+
+    @server.prompt
+    def strict_typed_prompt(numbers: list[int]) -> str:
+        """Expects list of integers but will receive invalid JSON."""
+        return f"Got {len(numbers)} numbers"
+
+    client = Client(transport=FastMCPTransport(server))
+
+    async with client:
+        with pytest.raises(McpError, match="Error rendering prompt"):
+            await client.get_prompt(
+                "strict_typed_prompt",
+                {
+                    "numbers": "not valid json"  # This will fail server-side conversion
+                },
+            )
 
 
 async def test_read_resource_invalid_uri(fastmcp_server):
@@ -321,6 +417,31 @@ async def test_initialize_result_disconnected(fastmcp_server):
         _ = client.initialize_result
 
 
+async def test_server_info_custom_version():
+    """Test that custom version is properly set in serverInfo."""
+    # Test with custom version
+    server_with_version = FastMCP("CustomVersionServer", version="1.2.3")
+    client = Client(transport=FastMCPTransport(server_with_version))
+
+    async with client:
+        result = client.initialize_result
+        assert result.serverInfo.name == "CustomVersionServer"
+        assert result.serverInfo.version == "1.2.3"
+
+    # Test without version (backward compatibility)
+    server_without_version = FastMCP("DefaultVersionServer")
+    client = Client(transport=FastMCPTransport(server_without_version))
+
+    async with client:
+        result = client.initialize_result
+        assert result.serverInfo.name == "DefaultVersionServer"
+        # Should fall back to MCP library version
+        assert result.serverInfo.version is not None
+        assert (
+            result.serverInfo.version != "1.2.3"
+        )  # Should be different from custom version
+
+
 async def test_client_nested_context_manager(fastmcp_server):
     """Test that the client connects and disconnects once in nested context manager."""
 
@@ -328,27 +449,27 @@ async def test_client_nested_context_manager(fastmcp_server):
 
     # Before connection
     assert not client.is_connected()
-    assert client._session is None
+    assert client._session_state.session is None
 
     # During connection
     async with client:
         assert client.is_connected()
-        assert client._session is not None
-        session = client._session
+        assert client._session_state.session is not None
+        session = client._session_state.session
 
         # Re-use the same session
         async with client:
             assert client.is_connected()
-            assert client._session is session
+            assert client._session_state.session is session
 
         # Re-use the same session
         async with client:
             assert client.is_connected()
-            assert client._session is session
+            assert client._session_state.session is session
 
     # After connection
     assert not client.is_connected()
-    assert client._session is None
+    assert client._session_state.session is None
 
 
 async def test_concurrent_client_context_managers():
@@ -415,9 +536,9 @@ async def test_resource_template(fastmcp_server):
 
         # Check the content matches what we expect for the provided user_id
         content_str = str(result[0])
-        assert '"id": "123"' in content_str
-        assert '"name": "User 123"' in content_str
-        assert '"active": true' in content_str
+        assert '"id":"123"' in content_str
+        assert '"name":"User 123"' in content_str
+        assert '"active":true' in content_str
 
 
 async def test_list_resource_templates_mcp(fastmcp_server):
@@ -474,7 +595,7 @@ async def test_template_access_via_client(fastmcp_server):
         uri = cast(AnyUrl, "data://user/456")
         result = await client.read_resource(uri)
         content_str = str(result[0])
-        assert '"id": "456"' in content_str
+        assert '"id":"456"' in content_str
 
 
 async def test_tagged_resource_metadata(tagged_resources_server):
@@ -514,8 +635,8 @@ async def test_tagged_template_functionality(tagged_resources_server):
         uri = cast(AnyUrl, "template://123")
         result = await client.read_resource(uri)
         content_str = str(result[0])
-        assert '"id": "123"' in content_str
-        assert '"type": "template_data"' in content_str
+        assert '"id":"123"' in content_str
+        assert '"type":"template_data"' in content_str
 
 
 class TestErrorHandling:
@@ -548,6 +669,18 @@ class TestErrorHandling:
             assert result.isError
             assert "test error" not in result.content[0].text  # type: ignore[attr-defined]
             assert "abc" not in result.content[0].text  # type: ignore[attr-defined]
+
+    async def test_validation_errors_are_not_masked_when_enabled(self):
+        mcp = FastMCP("TestServer", mask_error_details=True)
+
+        @mcp.tool
+        def validated_tool(x: int) -> int:
+            return x
+
+        async with Client(transport=FastMCPTransport(mcp)) as client:
+            result = await client.call_tool_mcp("validated_tool", {"x": "abc"})
+            assert result.isError
+            assert "'abc' is not of type 'integer'" in result.content[0].text  # type: ignore[attr-defined]
 
     async def test_specific_tool_errors_are_sent_to_client(self):
         mcp = FastMCP("TestServer")
@@ -710,7 +843,8 @@ class TestInferTransport:
             "http://example.com/api/sse/stream",
             "https://localhost:8080/mcp/sse/endpoint",
             "http://example.com/api/sse",
-            "https://localhost:8080/mcp/sse",
+            "http://example.com/api/sse/",
+            "https://localhost:8080/mcp/sse/",
             "http://example.com/api/sse?param=value",
             "https://localhost:8080/mcp/sse/?param=value",
             "https://localhost:8000/mcp/sse?x=1&y=2",
@@ -719,6 +853,7 @@ class TestInferTransport:
             "path_with_sse_directory",
             "path_with_sse_subdirectory",
             "path_ending_with_sse",
+            "path_ending_with_sse_slash",
             "path_ending_with_sse_https",
             "path_with_sse_and_query_params",
             "path_with_sse_slash_and_query_params",
@@ -733,7 +868,7 @@ class TestInferTransport:
         "url",
         [
             "http://example.com/api",
-            "https://localhost:8080/mcp",
+            "https://localhost:8080/mcp/",
             "http://example.com/asset/image.jpg",
             "https://localhost:8080/sservice/endpoint",
             "https://example.com/assets/file",
@@ -754,7 +889,7 @@ class TestInferTransport:
         config = {
             "mcpServers": {
                 "test_server": {
-                    "url": "http://localhost:8000/sse",
+                    "url": "http://localhost:8000/sse/",
                     "headers": {"Authorization": "Bearer 123"},
                 },
             }
@@ -762,7 +897,7 @@ class TestInferTransport:
         transport = infer_transport(config)
         assert isinstance(transport, MCPConfigTransport)
         assert isinstance(transport.transport, SSETransport)
-        assert transport.transport.url == "http://localhost:8000/sse"
+        assert transport.transport.url == "http://localhost:8000/sse/"
         assert transport.transport.headers == {"Authorization": "Bearer 123"}
 
     def test_infer_local_transport_from_config(self):
@@ -800,7 +935,7 @@ class TestInferTransport:
                     "args": ["hello"],
                 },
                 "remote": {
-                    "url": "http://localhost:8000/sse",
+                    "url": "http://localhost:8000/sse/",
                     "headers": {"Authorization": "Bearer 123"},
                 },
             }
@@ -808,7 +943,12 @@ class TestInferTransport:
         transport = infer_transport(config)
         assert isinstance(transport, MCPConfigTransport)
         assert isinstance(transport.transport, FastMCPTransport)
-        assert len(cast(FastMCP, transport.transport.server)._mounted_servers) == 2
+        assert (
+            len(
+                cast(FastMCP, transport.transport.server)._tool_manager._mounted_servers
+            )
+            == 2
+        )
 
     def test_infer_fastmcp_server(self, fastmcp_server):
         """FastMCP server instances should infer to FastMCPTransport."""

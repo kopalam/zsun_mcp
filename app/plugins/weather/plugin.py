@@ -1,112 +1,141 @@
-from ..base import BasePlugin
-import httpx
-from typing import Dict, Any
+"""Weather plugin implementation for FastMCP API service framework."""
+
+import asyncio
+import logging
+import os
 from datetime import datetime
+from typing import Any, Dict, List, Callable, Tuple
+import httpx
+from pydantic import BaseModel, Field
+
+from plugins.base import BasePlugin
+
+logger = logging.getLogger(__name__)
+
+
+class WeatherRequest(BaseModel):
+    """Pydantic model for weather request validation."""
+    city: str = Field(..., description="City name to get weather for")
+
 
 class WeatherPlugin(BasePlugin):
-    """天气插件"""
-    
+    """Weather plugin that provides weather information for cities."""
+
     def __init__(self):
-        super().__init__("Weather Service")
-        self.API_KEY = "c4aa79ba042f46f95854c58b3161fdc3"
-        self.BASE_URL = "http://api.openweathermap.org/data/2.5"
-    
-    def _register_tools(self):
-        """注册工具"""
-        pass  # 不再在这里注册工具
-    
-    async def get_weather_data(self, city: str) -> Dict[str, Any]:
-        """获取天气数据"""
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.BASE_URL}/forecast",
-                params={
-                    "q": city,
-                    "appid": self.API_KEY,
-                    "units": "metric",  # 使用摄氏度
-                    "lang": "zh_cn"     # 使用中文
-                }
+        super().__init__("weather")
+        self.weather_api_base = os.getenv("WEATHER_API_BASE", "https://api.openweathermap.org/data/2.5")
+        self.weather_api_key = os.getenv("WEATHER_API_KEY", "cbca4319f933ed0c631bcd4ac7907f37")
+        
+        # HTTP client with proper headers
+        self.http_client = httpx.AsyncClient(
+            headers={
+                "User-Agent": "FastMCP-Weather-Plugin/1.0",
+                "Accept": "application/json"
+            },
+            timeout=30.0
+        )
+
+    def tools(self) -> List[Callable]:
+        """Return the list of weather-related tools."""
+        return [self.get_weather]
+
+    async def get_weather(self, city: str) -> Dict[str, Any]:
+        """Get current weather information for a city.
+        
+        Args:
+            city: Name of the city to get weather for.
+            
+        Returns:
+            Dictionary containing weather information or error details.
+        """
+        try:
+            # Validate input
+            request = WeatherRequest(city=city)
+            
+            # Get weather data directly from OpenWeatherMap API
+            weather_data = await self._get_weather_data(city)
+            if weather_data is None:
+                return self.jsonrpc_err(
+                    -32603,  # INTERNAL_ERROR
+                    f"Could not get weather data for city: {city}",
+                    {"city": city, "error_type": "weather_api_failed"}
+                )
+            
+            # Format response based on OpenWeatherMap API structure
+            result = {
+                "city": weather_data.get("name", city),
+                "lat": weather_data.get("coord", {}).get("lat"),
+                "lon": weather_data.get("coord", {}).get("lon"),
+                "temperature_c": weather_data.get("main", {}).get("temp", 0),
+                "feels_like": weather_data.get("main", {}).get("feels_like", 0),
+                "humidity": weather_data.get("main", {}).get("humidity", 0),
+                "pressure": weather_data.get("main", {}).get("pressure", 0),
+                "windspeed": weather_data.get("wind", {}).get("speed", 0),
+                "wind_direction": weather_data.get("wind", {}).get("deg", 0),
+                "weather_main": weather_data.get("weather", [{}])[0].get("main", ""),
+                "weather_description": weather_data.get("weather", [{}])[0].get("description", ""),
+                "weather_icon": weather_data.get("weather", [{}])[0].get("icon", ""),
+                "visibility": weather_data.get("visibility", 0),
+                "clouds": weather_data.get("clouds", {}).get("all", 0),
+                "country": weather_data.get("sys", {}).get("country", ""),
+                "sunrise": weather_data.get("sys", {}).get("sunrise", 0),
+                "sunset": weather_data.get("sys", {}).get("sunset", 0),
+                "observed_at": datetime.fromtimestamp(weather_data.get("dt", 0)).isoformat(),
+                "provider": "openweathermap"
+            }
+            
+            logger.info(f"Weather data retrieved for {city}: {result['temperature_c']}°C")
+            return self.jsonrpc_ok(result)
+            
+        except Exception as e:
+            logger.error(f"Error getting weather for {city}: {str(e)}")
+            return self.jsonrpc_err(
+                -32603,  # INTERNAL_ERROR
+                f"An error occurred while getting weather: {str(e)}",
+                {"city": city, "error_type": "unknown_error", "detail": str(e)}
             )
-            return response.json()
-    
-    def format_weather_data(self, data: Dict[str, Any]) -> str:
-        """格式化天气数据"""
-        if "cod" not in data or data["cod"] != "200":
-            return f"获取天气数据失败: {data.get('message', '未知错误')}"
 
-        city = data["city"]["name"]
-        forecast = data["list"][0]  # 获取第一个预报数据
-        
-        # 解析天气数据
-        temp = forecast["main"]["temp"]
-        feels_like = forecast["main"]["feels_like"]
-        humidity = forecast["main"]["humidity"]
-        weather_desc = forecast["weather"][0]["description"]
-        wind_speed = forecast["wind"]["speed"]
-        
-        # 格式化时间
-        dt = datetime.fromtimestamp(forecast["dt"])
-        time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-        
-        return f"""
-{city}天气信息 ({time_str}):
-温度: {temp}°C
-体感温度: {feels_like}°C
-湿度: {humidity}%
-天气状况: {weather_desc}
-风速: {wind_speed} m/s
-"""
-    
-    async def get_weather(self, city: str) -> str:
-        """获取指定城市的天气信息
+
+    async def _get_weather_data(self, city: str) -> Dict[str, Any]:
+        """Get weather data for given city using OpenWeatherMap API.
         
         Args:
-            city: 城市名称，例如：beijing、shanghai、guangzhou等
+            city: Name of the city.
             
         Returns:
-            格式化的天气信息字符串
+            Dictionary containing weather data or None if failed.
         """
         try:
-            data = await self.get_weather_data(city)
-            return self.format_weather_data(data)
+            # Use OpenWeatherMap API
+            url = f"{self.weather_api_base}/weather"
+            params = {
+                "q": city,
+                "appid": self.weather_api_key,
+                "units": "metric",
+                "lang": "zh_cn"
+            }
+            
+            response = await self.http_client.get(url, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Check if the response indicates an error
+            if data.get("cod") != 200:
+                logger.warning(f"Weather API returned error for city {city}: {data.get('message', 'Unknown error')}")
+                return None
+            
+            logger.info(f"Weather data retrieved for city: {city}")
+            return data
+            
+        except httpx.HTTPError as e:
+            logger.error(f"HTTP error during weather data fetch for {city}: {str(e)}")
+            return None
         except Exception as e:
-            return f"获取天气信息失败: {str(e)}"
-    
-    async def get_weather_forecast(self, city: str, days: int = 3) -> str:
-        """获取指定城市的天气预报
-        
-        Args:
-            city: 城市名称，例如：beijing、shanghai、guangzhou等
-            days: 预报天数（1-5天）
-            
-        Returns:
-            格式化的天气预报信息字符串
-        """
-        try:
-            data = await self.get_weather_data(city)
-            if "cod" not in data or data["cod"] != "200":
-                return f"获取天气预报失败: {data.get('message', '未知错误')}"
+            logger.error(f"Unexpected error during weather data fetch for {city}: {str(e)}")
+            return None
 
-            city_name = data["city"]["name"]
-            forecast_list = data["list"]
-            
-            # 每天取一个时间点的数据
-            daily_forecasts = []
-            current_date = None
-            
-            for forecast in forecast_list:
-                dt = datetime.fromtimestamp(forecast["dt"])
-                date_str = dt.strftime("%Y-%m-%d")
-                
-                if date_str != current_date:
-                    current_date = date_str
-                    temp = forecast["main"]["temp"]
-                    weather_desc = forecast["weather"][0]["description"]
-                    daily_forecasts.append(f"{date_str}: {temp}°C, {weather_desc}")
-                    
-                    if len(daily_forecasts) >= days:
-                        break
-            
-            return f"{city_name}未来{days}天天气预报:\n" + "\n".join(daily_forecasts)
-        except Exception as e:
-            return f"获取天气预报失败: {str(e)}" 
+
+    async def close(self):
+        """Close the HTTP client."""
+        await self.http_client.aclose()

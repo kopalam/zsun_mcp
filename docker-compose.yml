@@ -10,15 +10,15 @@ services:
       - ./app:/app
     ports:
       - "8010:8010"
+    command: ["python", "run.py", "--transport", "dual", "--host", "0.0.0.0", "--port", "8010"]
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - FASTMCP_LOG_LEVEL=INFO
       - FASTMCP_ENABLE_RICH_TRACEBACKS=1
-      - FASTMCP_TRANSPORT=sse
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/mcp_endpoint/health')"]
       interval: 30s
       timeout: 10s
       retries: 3 

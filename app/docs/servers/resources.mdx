@@ -2,7 +2,7 @@
 title: Resources & Templates
 sidebarTitle: Resources
 description: Expose data sources and dynamic content generators to your MCP client.
-icon: database
+icon: folder-open
 ---
 
 import { VersionBadge } from "/snippets/version-badge.mdx"
@@ -58,18 +58,9 @@ def get_config() -> dict:
     *   Resource Name: Taken from the function name (`get_greeting`).
     *   Resource Description: Taken from the function's docstring.
 
-### Return Values
+#### Decorator Arguments
 
-FastMCP automatically converts your function's return value into the appropriate MCP resource content:
-
--   **`str`**: Sent as `TextResourceContents` (with `mime_type="text/plain"` by default).
--   **`dict`, `list`, `pydantic.BaseModel`**: Automatically serialized to a JSON string and sent as `TextResourceContents` (with `mime_type="application/json"` by default).
--   **`bytes`**: Base64 encoded and sent as `BlobResourceContents`. You should specify an appropriate `mime_type` (e.g., `"image/png"`, `"application/octet-stream"`).
--   **`None`**: Results in an empty resource content list being returned.
-
-### Resource Metadata
-
-You can customize the resource's properties using arguments in the decorator:
+You can customize the resource's properties using arguments in the `@mcp.resource` decorator:
 
 ```python
 from fastmcp import FastMCP
@@ -82,19 +73,66 @@ mcp = FastMCP(name="DataServer")
     name="ApplicationStatus",     # Custom name
     description="Provides the current status of the application.", # Custom description
     mime_type="application/json", # Explicit MIME type
-    tags={"monitoring", "status"} # Categorization tags
+    tags={"monitoring", "status"}, # Categorization tags
+    meta={"version": "2.1", "team": "infrastructure"}  # Custom metadata
 )
 def get_application_status() -> dict:
     """Internal function description (ignored if description is provided above)."""
     return {"status": "ok", "uptime": 12345, "version": mcp.settings.version} # Example usage
 ```
 
-- **`uri`**: The unique identifier for the resource (required).
-- **`name`**: A human-readable name (defaults to function name).
-- **`description`**: Explanation of the resource (defaults to docstring).
-- **`mime_type`**: Specifies the content type (FastMCP often infers a default like `text/plain` or `application/json`, but explicit is better for non-text types).
-- **`tags`**: A set of strings for categorization, potentially used by clients for filtering.
-- **`enabled`**: A boolean to enable or disable the resource (defaults to `True`). See [Disabling Resources](#disabling-resources) for more information.
+<Card icon="code" title="@resource Decorator Arguments">
+<ParamField body="uri" type="str" required>
+  The unique identifier for the resource
+</ParamField>
+
+<ParamField body="name" type="str | None">
+  A human-readable name. If not provided, defaults to function name
+</ParamField>
+
+<ParamField body="description" type="str | None">
+  Explanation of the resource. If not provided, defaults to docstring
+</ParamField>
+
+<ParamField body="mime_type" type="str | None">
+  Specifies the content type. FastMCP often infers a default like `text/plain` or `application/json`, but explicit is better for non-text types
+</ParamField>
+
+<ParamField body="tags" type="set[str] | None">
+  A set of strings used to categorize the resource. These can be used by the server and, in some cases, by clients to filter or group available resources.
+</ParamField>
+
+<ParamField body="enabled" type="bool" default="True">
+  A boolean to enable or disable the resource. See [Disabling Resources](#disabling-resources) for more information
+</ParamField>
+
+<ParamField body="annotations" type="Annotations | dict | None">
+    An optional `Annotations` object or dictionary to add additional metadata about the resource.
+  <Expandable title="Annotations attributes">
+    <ParamField body="readOnlyHint" type="bool | None">
+      If true, the resource is read-only and does not modify its environment.
+    </ParamField>
+    <ParamField body="idempotentHint" type="bool | None">
+      If true, reading the resource repeatedly will have no additional effect on its environment.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="meta" type="dict[str, Any] | None">
+  <VersionBadge version="2.11.0" />
+  
+  Optional meta information about the resource. This data is passed through to the MCP client as the `_meta` field of the client-side resource object and can be used for custom metadata, versioning, or other application-specific purposes.
+</ParamField>
+</Card>
+
+### Return Values
+
+FastMCP automatically converts your function's return value into the appropriate MCP resource content:
+
+-   **`str`**: Sent as `TextResourceContents` (with `mime_type="text/plain"` by default).
+-   **`dict`, `list`, `pydantic.BaseModel`**: Automatically serialized to a JSON string and sent as `TextResourceContents` (with `mime_type="application/json"` by default).
+-   **`bytes`**: Base64 encoded and sent as `BlobResourceContents`. You should specify an appropriate `mime_type` (e.g., `"image/png"`, `"application/octet-stream"`).
+-   **`None`**: Results in an empty resource content list being returned.
 
 ### Disabling Resources
 
@@ -121,6 +159,7 @@ def get_config(): return {"version": 1}
 get_config.disable()
 get_config.enable()
 ```
+
 
 ### Accessing MCP Context
 
@@ -153,7 +192,7 @@ async def get_details(name: str, ctx: Context) -> dict:
 For full documentation on the Context object and all its capabilities, see the [Context documentation](/servers/context).
 
 
-### Asynchronous Resources
+### Async Resources
 
 Use `async def` for resource functions that perform I/O operations (e.g., reading from a database or network) to avoid blocking the server.
 
@@ -259,11 +298,67 @@ mcp.add_resource(special_resource, key="internal://data-v2")  # Will be stored a
 
 Note that this parameter is only available when using `add_resource()` directly and not through the `@resource` decorator, as URIs are provided explicitly when using the decorator.
 
+### Notifications
+
+<VersionBadge version="2.9.1" />
+
+FastMCP automatically sends `notifications/resources/list_changed` notifications to connected clients when resources or templates are added, enabled, or disabled. This allows clients to stay up-to-date with the current resource set without manually polling for changes.
+
+```python
+@mcp.resource("data://example")
+def example_resource() -> str:
+    return "Hello!"
+
+# These operations trigger notifications:
+mcp.add_resource(example_resource)  # Sends resources/list_changed notification
+example_resource.disable()          # Sends resources/list_changed notification  
+example_resource.enable()           # Sends resources/list_changed notification
+```
+
+Notifications are only sent when these operations occur within an active MCP request context (e.g., when called from within a tool or other MCP operation). Operations performed during server initialization do not trigger notifications.
+
+Clients can handle these notifications using a [message handler](/clients/messages) to automatically refresh their resource lists or update their interfaces.
+
+### Annotations
+
+<VersionBadge version="2.11.0" />
+
+FastMCP allows you to add specialized metadata to your resources through annotations. These annotations communicate how resources behave to client applications without consuming token context in LLM prompts.
+
+Annotations serve several purposes in client applications:
+- Indicating whether resources are read-only or may have side effects
+- Describing the safety profile of resources (idempotent vs. non-idempotent)
+- Helping clients optimize caching and access patterns
+
+You can add annotations to a resource using the `annotations` parameter in the `@mcp.resource` decorator:
+
+```python
+@mcp.resource(
+    "data://config",
+    annotations={
+        "readOnlyHint": True,
+        "idempotentHint": True
+    }
+)
+def get_config() -> dict:
+    """Get application configuration."""
+    return {"version": "1.0", "debug": False}
+```
+
+FastMCP supports these standard annotations:
+
+| Annotation | Type | Default | Purpose |
+| :--------- | :--- | :------ | :------ |
+| `readOnlyHint` | boolean | true | Indicates if the resource only provides data without side effects |
+| `idempotentHint` | boolean | true | Indicates if repeated reads have the same effect as a single read |
+
+Remember that annotations help make better user experiences but should be treated as advisory hints. They help client applications present appropriate UI elements and optimize access patterns, but won't enforce behavior on their own. Always focus on making your annotations accurately represent what your resource actually does.
+
 ## Resource Templates
 
 Resource Templates allow clients to request resources whose content depends on parameters embedded in the URI. Define a template using the **same `@mcp.resource` decorator**, but include `{parameter_name}` placeholders in the URI string and add corresponding arguments to your function signature.
 
-Resource templates share most configuration options with regular resources (name, description, mime_type, tags), but add the ability to define URI parameters that map to function parameters.
+Resource templates share most configuration options with regular resources (name, description, mime_type, tags, annotations), but add the ability to define URI parameters that map to function parameters.
 
 Resource templates generate a new resource for each unique set of parameters, which means that resources can be dynamically created on-demand. For example, if the resource template `"user://profile/{name}"` is registered, MCP clients could request `"user://profile/ford"` or `"user://profile/marvin"` to retrieve either of those two user profiles as resources, without having to register each resource individually.
 
@@ -291,8 +386,14 @@ def get_weather(city: str) -> dict:
         "unit": "celsius"
     }
 
-# Template with multiple parameters
-@mcp.resource("repos://{owner}/{repo}/info")
+# Template with multiple parameters and annotations
+@mcp.resource(
+    "repos://{owner}/{repo}/info",
+    annotations={
+        "readOnlyHint": True,
+        "idempotentHint": True
+    }
+)
 def get_repo_info(owner: str, repo: str) -> dict:
     """Retrieves information about a GitHub repository."""
     # In a real implementation, this would call the GitHub API
@@ -401,7 +502,7 @@ def search_resources(query: str, max_results: int = 10, include_archived: bool =
 
 With this template, clients can request `search://python` and the function will be called with `query="python", max_results=10, include_archived=False`. MCP Developers can still call the underlying `search_resources` function directly with more specific parameters.
 
-An even more powerful pattern is registering a single function with multiple URI templates, allowing different ways to access the same data:
+You can also create multiple resource templates that provide different ways to access the same underlying data by manually applying decorators to a single function:
 
 ```python
 from fastmcp import FastMCP
@@ -409,27 +510,25 @@ from fastmcp import FastMCP
 mcp = FastMCP(name="DataServer")
 
 # Define a user lookup function that can be accessed by different identifiers
-@mcp.resource("users://email/{email}")
-@mcp.resource("users://name/{name}")
 def lookup_user(name: str | None = None, email: str | None = None) -> dict:
     """Look up a user by either name or email."""
     if email:
-        return find_user_by_email(email) # pseudocode
+        return find_user_by_email(email)  # pseudocode
     elif name:
-        return find_user_by_name(name) # pseudocode
+        return find_user_by_name(name)  # pseudocode
     else:
         return {"error": "No lookup parameters provided"}
+
+# Manually apply multiple decorators to the same function
+mcp.resource("users://email/{email}")(lookup_user)
+mcp.resource("users://name/{name}")(lookup_user)
 ```
 
 Now an LLM or client can retrieve user information in two different ways:
 - `users://email/alice@example.com` → Looks up user by email (with name=None)
 - `users://name/Bob` → Looks up user by name (with email=None)
 
-In this stacked decorator pattern:
-- The `name` parameter is only provided when using the `users://name/{name}` template
-- The `email` parameter is only provided when using the `users://email/{email}` template
-- Each parameter defaults to `None` when not included in the URI
-- The function logic handles whichever parameter is provided
+This approach allows a single function to be registered with multiple URI patterns while keeping the implementation clean and straightforward.
 
 Templates provide a powerful way to expose parameterized data access points following REST-like principles.
 

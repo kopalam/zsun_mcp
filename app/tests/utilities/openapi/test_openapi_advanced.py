@@ -294,6 +294,28 @@ def test_complex_schema_route_count(parsed_complex_routes):
     assert len(parsed_complex_routes) == 3
 
 
+def test_complex_schema_ref_rewriting(parsed_complex_routes):
+    """Test that all #/components references have been rewritten."""
+
+    def no_components(value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k == "$ref":
+                    assert not v.startswith("#/components/"), (
+                        f"reference '{v}' was not rewritten"
+                    )
+                else:
+                    no_components(v)
+        elif isinstance(value, list):
+            for v in value:
+                no_components(v)
+
+    for route in parsed_complex_routes:
+        no_components(route.schema_definitions)
+        for param in route.parameters:
+            no_components(param.schema_)
+
+
 def test_complex_schema_list_users_query_param_limit(complex_route_map):
     """Test that a reference to a limit query parameter is correctly resolved."""
     list_users = complex_route_map["listUsers"]
@@ -592,3 +614,52 @@ def test_http_trace_method_path(parsed_http_methods_routes):
 
     assert trace_route is not None
     assert trace_route.path == "/resource"
+
+
+@pytest.fixture
+def schema_with_external_reference() -> dict[str, Any]:
+    """Fixture that returns a schema with external schema references like in issue #926."""
+    return {
+        "openapi": "3.0.0",
+        "info": {"title": "External Reference API", "version": "1.0.0"},
+        "paths": {
+            "/products": {
+                "post": {
+                    "summary": "Create a product",
+                    "operationId": "createProduct",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "obj": {
+                                            "$ref": "http://cyaninc.com/json-schemas/market-v1/product-constraints"
+                                        }
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"201": {"description": "Product created"}},
+                }
+            }
+        },
+    }
+
+
+# --- Tests for external schema reference handling --- #
+
+
+def test_external_reference_raises_clear_error(schema_with_external_reference):
+    """Test that external schema references raise a clear, helpful error message."""
+    with pytest.raises(ValueError) as exc_info:
+        parse_openapi_to_http_routes(schema_with_external_reference)
+
+    error_message = str(exc_info.value)
+    assert "External or non-local reference not supported" in error_message
+    assert (
+        "http://cyaninc.com/json-schemas/market-v1/product-constraints" in error_message
+    )
+    assert "FastMCP only supports local schema references" in error_message

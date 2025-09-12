@@ -1,7 +1,6 @@
 from typing import Any
 
 import pytest
-from mcp.types import TextContent
 
 from fastmcp import Client, FastMCP
 from fastmcp.tools.tool import Tool
@@ -19,9 +18,10 @@ async def test_tool_exclude_args_in_tool_manager():
             pass
         return message
 
-    tools = mcp._tool_manager.list_tools()
+    tools_dict = await mcp._tool_manager.get_tools()
+    tools = list(tools_dict.values())
     assert len(tools) == 1
-    assert "state" not in echo.parameters["properties"]
+    assert "state" not in tools[0].parameters["properties"]
 
 
 async def test_tool_exclude_args_without_default_value_raises_error():
@@ -60,7 +60,8 @@ async def test_add_tool_method_exclude_args():
     mcp.add_tool(tool)
 
     # Check internal tool objects directly
-    tools = mcp._tool_manager.list_tools()
+    tools_dict = await mcp._tool_manager.get_tools()
+    tools = list(tools_dict.values())
     assert len(tools) == 1
     assert "state" not in tools[0].parameters["properties"]
 
@@ -90,9 +91,4 @@ async def test_tool_functionality_with_exclude_args():
         result = await client.call_tool(
             "create_item", {"name": "test_item", "value": 42}
         )
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-
-        # The result should contain the expected JSON
-        assert '"name": "test_item"' in result[0].text
-        assert '"value": 42' in result[0].text
+        assert result.data == {"name": "test_item", "value": 42}

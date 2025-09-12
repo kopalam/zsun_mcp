@@ -3,22 +3,18 @@ from collections.abc import Awaitable, Callable
 from typing import TypeAlias
 
 import mcp.types
-from mcp import ClientSession, CreateMessageResult
-from mcp.client.session import SamplingFnT
+from mcp import CreateMessageResult
+from mcp.client.session import ClientSession, SamplingFnT
 from mcp.shared.context import LifespanContextT, RequestContext
 from mcp.types import CreateMessageRequestParams as SamplingParams
 from mcp.types import SamplingMessage
 
-__all__ = ["SamplingMessage", "SamplingParams", "MessageResult", "SamplingHandler"]
+from fastmcp.server.sampling.handler import ServerSamplingHandler
+
+__all__ = ["SamplingMessage", "SamplingParams", "SamplingHandler"]
 
 
-class MessageResult(CreateMessageResult):
-    role: mcp.types.Role = "assistant"
-    content: mcp.types.TextContent | mcp.types.ImageContent
-    model: str = "client-model"
-
-
-SamplingHandler: TypeAlias = Callable[
+ClientSamplingHandler: TypeAlias = Callable[
     [
         list[SamplingMessage],
         SamplingParams,
@@ -27,8 +23,14 @@ SamplingHandler: TypeAlias = Callable[
     str | CreateMessageResult | Awaitable[str | CreateMessageResult],
 ]
 
+SamplingHandler: TypeAlias = (
+    ClientSamplingHandler[LifespanContextT] | ServerSamplingHandler[LifespanContextT]
+)
 
-def create_sampling_callback(sampling_handler: SamplingHandler) -> SamplingFnT:
+
+def create_sampling_callback(
+    sampling_handler: ClientSamplingHandler[LifespanContextT],
+) -> SamplingFnT:
     async def _sampling_handler(
         context: RequestContext[ClientSession, LifespanContextT],
         params: SamplingParams,
@@ -39,8 +41,10 @@ def create_sampling_callback(sampling_handler: SamplingHandler) -> SamplingFnT:
                 result = await result
 
             if isinstance(result, str):
-                result = MessageResult(
-                    content=mcp.types.TextContent(type="text", text=result)
+                result = CreateMessageResult(
+                    role="assistant",
+                    model="fastmcp-client",
+                    content=mcp.types.TextContent(type="text", text=result),
                 )
             return result
         except Exception as e:

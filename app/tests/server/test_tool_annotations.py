@@ -22,7 +22,8 @@ async def test_tool_annotations_in_tool_manager():
         return message
 
     # Check internal tool objects directly
-    tools = mcp._tool_manager.list_tools()
+    tools_dict = await mcp._tool_manager.get_tools()
+    tools = list(tools_dict.values())
     assert len(tools) == 1
     assert tools[0].annotations is not None
     assert tools[0].annotations.title == "Echo Tool"
@@ -124,7 +125,8 @@ async def test_direct_tool_annotations_in_tool_manager():
         return {"modified": True, **data}
 
     # Check internal tool objects directly
-    tools = mcp._tool_manager.list_tools()
+    tools_dict = await mcp._tool_manager.get_tools()
+    tools = list(tools_dict.values())
     assert len(tools) == 1
     assert tools[0].annotations is not None
     assert tools[0].annotations.title == "Direct Tool"
@@ -183,7 +185,8 @@ async def test_add_tool_method_annotations():
     mcp.add_tool(tool)
 
     # Check internal tool objects directly
-    tools = mcp._tool_manager.list_tools()
+    tools_dict = await mcp._tool_manager.get_tools()
+    tools = list(tools_dict.values())
     assert len(tools) == 1
     assert tools[0].annotations is not None
     assert tools[0].annotations.title == "Create Item"
@@ -215,8 +218,4 @@ async def test_tool_functionality_with_annotations():
         result = await client.call_tool(
             "create_item", {"name": "test_item", "value": 42}
         )
-        assert len(result) == 1
-
-        # The result should contain the expected JSON
-        assert '"name": "test_item"' in result[0].text  # type: ignore[attr-defined]
-        assert '"value": 42' in result[0].text  # type: ignore[attr-defined]
+        assert result.data == {"name": "test_item", "value": 42}

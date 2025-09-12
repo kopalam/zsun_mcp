@@ -1,27 +1,35 @@
-from typing import Annotated
+import logging
+from typing import Annotated, Any
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from mcp import McpError
 from pydantic import Field
+from pytest import LogCaptureFixture
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import NotFoundError
+from fastmcp.experimental.server.openapi import (
+    FastMCPOpenAPI as ExperimentalFastMCPOpenAPI,
+)
 from fastmcp.prompts.prompt import FunctionPrompt, Prompt
 from fastmcp.resources import Resource, ResourceTemplate
+from fastmcp.server.openapi import FastMCPOpenAPI as LegacyFastMCPOpenAPI
 from fastmcp.server.server import (
-    MountedServer,
     add_resource_prefix,
     has_resource_prefix,
     remove_resource_prefix,
 )
 from fastmcp.tools import FunctionTool
 from fastmcp.tools.tool import Tool
+from fastmcp.utilities.tests import caplog_for_fastmcp, temporary_settings
 
 
 class TestCreateServer:
     async def test_create_server(self):
         mcp = FastMCP(instructions="Server instructions")
-        assert mcp.name == "FastMCP"
+        assert mcp.name.startswith("FastMCP-")
         assert mcp.instructions == "Server instructions"
 
     async def test_non_ascii_description(self):
@@ -46,9 +54,7 @@ class TestCreateServer:
             assert "🎉" in tool.description
 
             result = await client.call_tool("hello_world", {})
-            assert len(result) == 1
-            content = result[0]
-            assert content.text == "¡Hola, 世界! 👋"  # type: ignore[attr-defined]
+            assert result.data == "¡Hola, 世界! 👋"
 
 
 class TestTools:
@@ -130,8 +136,9 @@ class TestToolDecorator:
         def add(x: int, y: int) -> int:
             return x + y
 
-        result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"x": 1, "y": 2})
+            assert result.data == 3
 
     async def test_tool_decorator_without_parentheses(self):
         """Test that @tool decorator works without parentheses."""
@@ -147,8 +154,9 @@ class TestToolDecorator:
         assert "add" in tools
 
         # Verify it can be called
-        result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"x": 1, "y": 2})
+            assert result.data == 3
 
     async def test_tool_decorator_with_name(self):
         mcp = FastMCP()
@@ -157,8 +165,9 @@ class TestToolDecorator:
         def add(x: int, y: int) -> int:
             return x + y
 
-        result = await mcp._mcp_call_tool("custom-add", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("custom-add", {"x": 1, "y": 2})
+            assert result.data == 3
 
     async def test_tool_decorator_with_description(self):
         mcp = FastMCP()
@@ -184,8 +193,9 @@ class TestToolDecorator:
 
         obj = MyClass(10)
         mcp.add_tool(Tool.from_function(obj.add))
-        result = await mcp._mcp_call_tool("add", {"y": 2})
-        assert result[0].text == "12"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"y": 2})
+            assert result.data == 12
 
     async def test_tool_decorator_classmethod(self):
         mcp = FastMCP()
@@ -198,8 +208,9 @@ class TestToolDecorator:
                 return cls.x + y
 
         mcp.add_tool(Tool.from_function(MyClass.add))
-        result = await mcp._mcp_call_tool("add", {"y": 2})
-        assert result[0].text == "12"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"y": 2})
+            assert result.data == 12
 
     async def test_tool_decorator_staticmethod(self):
         mcp = FastMCP()
@@ -210,8 +221,9 @@ class TestToolDecorator:
             def add(x: int, y: int) -> int:
                 return x + y
 
-        result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"x": 1, "y": 2})
+            assert result.data == 3
 
     async def test_tool_decorator_async_function(self):
         mcp = FastMCP()
@@ -220,8 +232,9 @@ class TestToolDecorator:
         async def add(x: int, y: int) -> int:
             return x + y
 
-        result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"x": 1, "y": 2})
+            assert result.data == 3
 
     async def test_tool_decorator_classmethod_error(self):
         mcp = FastMCP()
@@ -245,8 +258,9 @@ class TestToolDecorator:
                 return cls.x + y
 
         mcp.add_tool(Tool.from_function(MyClass.add))
-        result = await mcp._mcp_call_tool("add", {"y": 2})
-        assert result[0].text == "12"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"y": 2})
+            assert result.data == 12
 
     async def test_tool_decorator_staticmethod_async_function(self):
         mcp = FastMCP()
@@ -257,8 +271,9 @@ class TestToolDecorator:
                 return x + y
 
         mcp.add_tool(Tool.from_function(MyClass.add))
-        result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"x": 1, "y": 2})
+            assert result.data == 3
 
     async def test_tool_decorator_staticmethod_order(self):
         """Test that the recommended decorator order works for static methods"""
@@ -271,8 +286,9 @@ class TestToolDecorator:
                 return x + y
 
         # Test that the recommended order works
-        result = await mcp._mcp_call_tool("add_v1", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("add_v1", {"x": 1, "y": 2})
+            assert result.data == 3
 
     async def test_tool_decorator_with_tags(self):
         """Test that the tool decorator properly sets tags."""
@@ -283,7 +299,7 @@ class TestToolDecorator:
             return x * 2
 
         # Verify the tags were set correctly
-        tools = mcp._tool_manager.list_tools()
+        tools = await mcp._tool_manager.list_tools()
         assert len(tools) == 1
         assert tools[0].tags == {"example", "test-tag"}
 
@@ -302,8 +318,9 @@ class TestToolDecorator:
         assert "custom_multiply" in tools
 
         # Call the tool by its custom name
-        result = await mcp._mcp_call_tool("custom_multiply", {"a": 5, "b": 3})
-        assert result[0].text == "15"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("custom_multiply", {"a": 5, "b": 3})
+            assert result.data == 15
 
         # Original name should not be registered
         assert "multiply" not in tools
@@ -357,8 +374,9 @@ class TestToolDecorator:
         assert tools["direct_call_tool"] is result_fn
 
         # Verify it can be called
-        result = await mcp._mcp_call_tool("direct_call_tool", {"x": 5, "y": 3})
-        assert result[0].text == "8"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("direct_call_tool", {"x": 5, "y": 3})
+            assert result.data == 8
 
     async def test_tool_decorator_with_string_name(self):
         """Test that @tool("custom_name") syntax works correctly."""
@@ -375,8 +393,9 @@ class TestToolDecorator:
         assert "my_function" not in tools  # Original name should not be registered
 
         # Verify it can be called
-        result = await mcp._mcp_call_tool("string_named_tool", {"x": 42})
-        assert result[0].text == "Result: 42"  # type: ignore[attr-defined]
+        async with Client(mcp) as client:
+            result = await client.call_tool("string_named_tool", {"x": 42})
+            assert result.data == "Result: 42"
 
     async def test_tool_decorator_conflicting_names_error(self):
         """Test that providing both positional and keyword name raises an error."""
@@ -390,6 +409,33 @@ class TestToolDecorator:
             @mcp.tool("positional_name", name="keyword_name")
             def my_function(x: int) -> str:
                 return f"Result: {x}"
+
+    async def test_tool_decorator_with_output_schema(self):
+        mcp = FastMCP()
+
+        with pytest.raises(
+            ValueError, match='Output schemas must have "type" set to "object"'
+        ):
+
+            @mcp.tool(output_schema={"type": "integer"})
+            def my_function(x: int) -> str:
+                return f"Result: {x}"
+
+    async def test_tool_decorator_with_meta(self):
+        """Test that meta parameter is passed through the tool decorator."""
+        mcp = FastMCP()
+
+        meta_data = {"version": "1.0", "author": "test"}
+
+        @mcp.tool(meta=meta_data)
+        def multiply(a: int, b: int) -> int:
+            """Multiply two numbers."""
+            return a * b
+
+        tools_dict = await mcp.get_tools()
+        tool = tools_dict["multiply"]
+
+        assert tool.meta == meta_data
 
 
 class TestResourceDecorator:
@@ -554,6 +600,21 @@ class TestResourceDecorator:
             result = await client.read_resource("resource://data")
             assert result[0].text == "Static Hello, world!"  # type: ignore[attr-defined]
 
+    async def test_resource_decorator_with_meta(self):
+        """Test that meta parameter is passed through the resource decorator."""
+        mcp = FastMCP()
+
+        meta_data = {"version": "1.0", "author": "test"}
+
+        @mcp.resource("resource://data", meta=meta_data)
+        def get_data() -> str:
+            return "Hello, world!"
+
+        resources_dict = await mcp.get_resources()
+        resource = resources_dict["resource://data"]
+
+        assert resource.meta == meta_data
+
 
 class TestTemplateDecorator:
     async def test_template_decorator(self):
@@ -702,6 +763,21 @@ class TestTemplateDecorator:
         template = templates_dict["resource://{param*}"]
         assert template.uri_template == "resource://{param*}"
         assert template.name == "template_resource"
+
+    async def test_template_decorator_with_meta(self):
+        """Test that meta parameter is passed through the template decorator."""
+        mcp = FastMCP()
+
+        meta_data = {"version": "2.0", "template": "test"}
+
+        @mcp.resource("resource://{param}/data", meta=meta_data)
+        def get_template_data(param: str) -> str:
+            return f"Data for {param}"
+
+        templates_dict = await mcp.get_resource_templates()
+        template = templates_dict["resource://{param}/data"]
+
+        assert template.meta == meta_data
 
 
 class TestPromptDecorator:
@@ -958,6 +1034,21 @@ class TestPromptDecorator:
             message = result.messages[0]
             assert message.content.text == "Static Hello, world!"  # type: ignore[attr-defined]
 
+    async def test_prompt_decorator_with_meta(self):
+        """Test that meta parameter is passed through the prompt decorator."""
+        mcp = FastMCP()
+
+        meta_data = {"version": "3.0", "type": "prompt"}
+
+        @mcp.prompt(meta=meta_data)
+        def test_prompt(message: str) -> str:
+            return f"Response: {message}"
+
+        prompts_dict = await mcp.get_prompts()
+        prompt = prompts_dict["test_prompt"]
+
+        assert prompt.meta == meta_data
+
 
 class TestResourcePrefixHelpers:
     @pytest.mark.parametrize(
@@ -1126,7 +1217,7 @@ class TestResourcePrefixMounting:
 
         # Create a main server and mount the resource server
         main_server = FastMCP(name="MainServer")
-        main_server.mount("prefix", server)
+        main_server.mount(server, "prefix")
 
         # Check that the resources are mounted with the correct prefixes
         resources = await main_server.get_resources()
@@ -1183,16 +1274,23 @@ class TestResourcePrefixMounting:
     async def test_mounted_server_matching_and_stripping(
         self, uri, prefix, expected_match, expected_strip
     ):
-        """Test that MountedServer correctly matches and strips resource prefixes."""
-        # Create a basic server to mount
+        """Test that resource prefix utility functions correctly match and strip resource prefixes."""
+        from fastmcp.server.server import has_resource_prefix, remove_resource_prefix
+
+        # Create a basic server to get the default resource prefix format
         server = FastMCP()
-        mounted = MountedServer(prefix=prefix, server=server)
 
         # Test matching
-        assert mounted.match_resource(uri) == expected_match
+        assert (
+            has_resource_prefix(uri, prefix, server.resource_prefix_format)
+            == expected_match
+        )
 
         # Test stripping
-        assert mounted.strip_resource_prefix(uri) == expected_strip
+        assert (
+            remove_resource_prefix(uri, prefix, server.resource_prefix_format)
+            == expected_strip
+        )
 
     async def test_import_server_with_new_prefix_format(self):
         """Test that import_server correctly uses the new prefix format."""
@@ -1213,7 +1311,7 @@ class TestResourcePrefixMounting:
 
         # Create target server and import the source server
         target_server = FastMCP(name="TargetServer")
-        await target_server.import_server("imported", source_server)
+        await target_server.import_server(source_server, "imported")
 
         # Check that the resources were imported with the correct prefixes
         resources = await target_server.get_resources()
@@ -1338,3 +1436,145 @@ class TestShouldIncludeComponent:
         mcp2 = FastMCP(tools=[tool2], exclude_tags={"bad_tag"})
         result = mcp2._should_enable_component(tool2)
         assert result is True
+
+
+class TestOpenAPIExperimentalFeatureFlag:
+    """Test experimental OpenAPI parser feature flag behavior."""
+
+    @pytest.fixture
+    def simple_openapi_spec(self):
+        """Simple OpenAPI spec for testing."""
+        return {
+            "openapi": "3.0.0",
+            "info": {"title": "Test API", "version": "1.0.0"},
+            "paths": {
+                "/test": {
+                    "get": {
+                        "operationId": "test_operation",
+                        "summary": "Test operation",
+                        "responses": {"200": {"description": "Success"}},
+                    }
+                }
+            },
+        }
+
+    @pytest.fixture
+    def mock_client(self):
+        """Mock HTTP client."""
+        return httpx.AsyncClient(base_url="https://api.example.com")
+
+    def test_from_openapi_uses_legacy_by_default_and_logs_message(
+        self,
+        simple_openapi_spec: dict[str, Any],
+        mock_client: httpx.AsyncClient,
+        caplog: LogCaptureFixture,
+    ):
+        """Test that from_openapi uses legacy parser by default and emits log message."""
+        # Capture all logs at INFO level and above using FastMCP's logger
+        with caplog_for_fastmcp(caplog), caplog.at_level(logging.INFO):
+            # Create server using from_openapi (should use legacy by default)
+            server = FastMCP.from_openapi(
+                openapi_spec=simple_openapi_spec, client=mock_client
+            )
+
+        # Should be the legacy implementation
+        assert isinstance(server, LegacyFastMCPOpenAPI)
+
+        # Should have logged the message about using legacy parser
+        legacy_log_messages = [
+            record
+            for record in caplog.records
+            if "Using legacy OpenAPI parser" in record.message
+        ]
+        assert len(legacy_log_messages) == 1
+        assert legacy_log_messages[0].levelno == logging.INFO
+        assert (
+            "FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER=true"
+            in legacy_log_messages[0].message
+        )
+
+    def test_from_openapi_uses_experimental_with_flag_and_no_log(
+        self,
+        simple_openapi_spec: dict[str, Any],
+        mock_client: httpx.AsyncClient,
+        caplog: LogCaptureFixture,
+    ):
+        """Test that from_openapi uses experimental parser with flag and emits no log."""
+        # Capture all logs at INFO level and above
+        with caplog.at_level(logging.INFO):
+            # Create server with experimental flag enabled
+            with temporary_settings(experimental__enable_new_openapi_parser=True):
+                server = FastMCP.from_openapi(
+                    openapi_spec=simple_openapi_spec, client=mock_client
+                )
+
+        # Should be the experimental implementation
+        assert isinstance(server, ExperimentalFastMCPOpenAPI)
+
+        # Should not have logged the legacy parser message
+        legacy_log_messages = [
+            record
+            for record in caplog.records
+            if "Using legacy OpenAPI parser" in record.message
+        ]
+        assert len(legacy_log_messages) == 0
+
+    def test_from_fastapi_uses_legacy_by_default_and_logs_message(
+        self, caplog: LogCaptureFixture
+    ):
+        """Test that from_fastapi uses legacy parser by default and emits log message."""
+        # Capture all logs at INFO level and above using FastMCP's logger
+        with caplog_for_fastmcp(caplog), caplog.at_level(logging.INFO):
+            # Create a simple FastAPI app
+            app = FastAPI(title="Test API")
+
+            @app.get("/test")
+            def test_endpoint():
+                return {"message": "test"}
+
+            # Create server using from_fastapi (should use legacy by default)
+            server = FastMCP.from_fastapi(app=app)
+
+        # Should be the legacy implementation
+        assert isinstance(server, LegacyFastMCPOpenAPI)
+
+        # Should have logged the message about using legacy parser
+        legacy_log_messages = [
+            record
+            for record in caplog.records
+            if "Using legacy OpenAPI parser" in record.message
+        ]
+        assert len(legacy_log_messages) == 1
+        assert legacy_log_messages[0].levelno == logging.INFO
+        assert (
+            "FASTMCP_EXPERIMENTAL_ENABLE_NEW_OPENAPI_PARSER=true"
+            in legacy_log_messages[0].message
+        )
+
+    def test_from_fastapi_uses_experimental_with_flag_and_no_log(
+        self, caplog: LogCaptureFixture
+    ):
+        """Test that from_fastapi uses experimental parser with flag and emits no log."""
+        # Capture all logs at INFO level and above
+        with caplog.at_level(logging.INFO):
+            # Create a simple FastAPI app
+            app = FastAPI(title="Test API")
+
+            @app.get("/test")
+            def test_endpoint():
+                return {"message": "test"}
+
+            # Create server with experimental flag enabled
+            with temporary_settings(experimental__enable_new_openapi_parser=True):
+                server = FastMCP.from_fastapi(app=app)
+
+        # Should be the experimental implementation
+        assert isinstance(server, ExperimentalFastMCPOpenAPI)
+
+        # Should not have logged the legacy parser message
+        legacy_log_messages = [
+            record
+            for record in caplog.records
+            if "Using legacy OpenAPI parser" in record.message
+        ]
+        assert len(legacy_log_messages) == 0

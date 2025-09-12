@@ -1,9 +1,8 @@
 ---
-title: Anthropic API + FastMCP
+title: Anthropic API 🤝 FastMCP
 sidebarTitle: Anthropic API
-description: Call FastMCP servers from the Anthropic API
-icon: message-smile
-tag: "New!"
+description: Connect FastMCP servers to the Anthropic API
+icon: message-code
 ---
 
 import { VersionBadge } from "/snippets/version-badge.mdx"
@@ -31,7 +30,7 @@ def roll_dice(n_dice: int) -> list[int]:
     return [random.randint(1, 6) for _ in range(n_dice)]
 
 if __name__ == "__main__":
-    mcp.run(transport="sse", port=8000)
+    mcp.run(transport="http", port=8000)
 ```
 
 ## Deploy the Server
@@ -70,7 +69,7 @@ You'll also need to authenticate with Anthropic. You can do this by setting the 
 export ANTHROPIC_API_KEY="your-api-key"
 ```
 
-Here is an example of how to call your server from Python. Note that you'll need to replace `https://your-server-url.com` with the actual URL of your server. In addition, we use `/sse` as the endpoint because we deployed an SSE server with the default path; you may need to use a different endpoint if you customized your server's deployment. **At this time you must also include the `extra_headers` parameter with the `anthropic-beta` header.**
+Here is an example of how to call your server from Python. Note that you'll need to replace `https://your-server-url.com` with the actual URL of your server. In addition, we use `/mcp/` as the endpoint because we deployed a streamable-HTTP server with the default path; you may need to use a different endpoint if you customized your server's deployment. **At this time you must also include the `extra_headers` parameter with the `anthropic-beta` header.**
 
 ```python {5, 13-22}
 import anthropic
@@ -88,7 +87,7 @@ response = client.beta.messages.create(
     mcp_servers=[
         {
             "type": "url",
-            "url": f"{url}/sse",
+            "url": f"{url}/mcp/",
             "name": "dice-server",
         }
     ],
@@ -121,12 +120,12 @@ The MCP connector supports OAuth authentication through authorization tokens, wh
 
 The simplest way to add authentication to the server is to use a bearer token scheme. 
 
-For this example, we'll quickly generate our own tokens with FastMCP's `RSAKeyPair` utility, but this may not be appropriate for production use. For more details, see the complete server-side [Bearer Auth](/servers/auth/bearer) documentation. 
+For this example, we'll quickly generate our own tokens with FastMCP's `RSAKeyPair` utility, but this may not be appropriate for production use. For more details, see the complete server-side [Token Verification](/servers/auth/token-verification) documentation. 
 
 We'll start by creating an RSA key pair to sign and verify tokens.
 
 ```python
-from fastmcp.server.auth.providers.bearer import RSAKeyPair
+from fastmcp.server.auth.providers.jwt import RSAKeyPair
 
 key_pair = RSAKeyPair.generate()
 access_token = key_pair.create_token(audience="dice-server")
@@ -136,13 +135,13 @@ access_token = key_pair.create_token(audience="dice-server")
 FastMCP's `RSAKeyPair` utility is for development and testing only.
 </Warning> 
 
-Next, we'll create a `BearerAuthProvider` to authenticate the server. 
+Next, we'll create a `JWTVerifier` to authenticate the server. 
 
 ```python
 from fastmcp import FastMCP
-from fastmcp.server.auth import BearerAuthProvider
+from fastmcp.server.auth import JWTVerifier
 
-auth = BearerAuthProvider(
+auth = JWTVerifier(
     public_key=key_pair.public_key,
     audience="dice-server",
 )
@@ -154,14 +153,14 @@ Here is a complete example that you can copy/paste. For simplicity and the purpo
 
 ```python server.py [expandable]
 from fastmcp import FastMCP
-from fastmcp.server.auth import BearerAuthProvider
-from fastmcp.server.auth.providers.bearer import RSAKeyPair
+from fastmcp.server.auth import JWTVerifier
+from fastmcp.server.auth.providers.jwt import RSAKeyPair
 import random
 
 key_pair = RSAKeyPair.generate()
 access_token = key_pair.create_token(audience="dice-server")
 
-auth = BearerAuthProvider(
+auth = JWTVerifier(
     public_key=key_pair.public_key,
     audience="dice-server",
 )
@@ -175,7 +174,7 @@ def roll_dice(n_dice: int) -> list[int]:
 
 if __name__ == "__main__":
     print(f"\n---\n\n🔑 Dice Roller access token:\n\n{access_token}\n\n---\n")
-    mcp.run(transport="sse", port=8000)
+    mcp.run(transport="http", port=8000)
 ```
 
 ### Client Authentication
@@ -213,7 +212,7 @@ response = client.beta.messages.create(
     mcp_servers=[
         {
             "type": "url",
-            "url": f"{url}/sse",
+            "url": f"{url}/mcp/",
             "name": "dice-server",
             "authorization_token": access_token
         }

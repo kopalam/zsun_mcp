@@ -2,9 +2,10 @@
 
 <!-- omit in toc -->
 # FastMCP v2 🚀
+
 <strong>The fast, Pythonic way to build MCP servers and clients.</strong>
 
-*FastMCP is made with 💙 by [Prefect](https://www.prefect.io/)*
+*Made with ☕️ by [Prefect](https://www.prefect.io/)*
 
 [![Docs](https://img.shields.io/badge/docs-gofastmcp.com-blue)](https://gofastmcp.com)
 [![PyPI - Version](https://img.shields.io/pypi/v/fastmcp.svg)](https://pypi.org/project/fastmcp)
@@ -15,15 +16,16 @@
 </div>
 
 > [!Note]
+>
 > #### Beyond the Protocol
-> 
+>
 > FastMCP is the standard framework for working with the Model Context Protocol. FastMCP 1.0 was incorporated into the [official MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) in 2024.
-> 
+>
 > This is FastMCP 2.0, the **actively maintained version** that provides a complete toolkit for working with the MCP ecosystem.
 >
 > FastMCP 2.0 has a comprehensive set of features that go far beyond the core MCP specification, all in service of providing **the simplest path to production**. These include deployment, auth, clients, server proxying and composition, generating servers from REST APIs, dynamic tool rewriting, built-in testing tools, integrations, and more.
 >
-> Ready to upgrade or get started? Follow the [installation instructions](/getting-started/installation), which include steps for upgrading from the official MCP SDK.
+> Ready to upgrade or get started? Follow the [installation instructions](https://gofastmcp.com/getting-started/installation), which include steps for upgrading from the official MCP SDK.
 
 ---
 
@@ -45,6 +47,7 @@ if __name__ == "__main__":
 ```
 
 Run the server locally:
+
 ```bash
 fastmcp run server.py
 ```
@@ -53,9 +56,10 @@ fastmcp run server.py
 
 FastMCP's complete documentation is available at **[gofastmcp.com](https://gofastmcp.com)**, including detailed guides, API references, and advanced patterns. This readme provides only a high-level overview.
 
-Documentation is also available in [llms.txt format](https://llmstxt.org/), which is a simple markdown standard that LLMs can consume easily. 
+Documentation is also available in [llms.txt format](https://llmstxt.org/), which is a simple markdown standard that LLMs can consume easily.
 
 There are two ways to access the LLM-friendly documentation:
+
 - [`llms.txt`](https://gofastmcp.com/llms.txt) is essentially a sitemap, listing all the pages in the documentation.
 - [`llms-full.txt`](https://gofastmcp.com/llms-full.txt) contains the entire documentation. Note this may exceed the context window of your LLM.
 
@@ -145,7 +149,7 @@ Learn more in the [**FastMCP Server Documentation**](https://gofastmcp.com/serve
 
 ### Tools
 
-Tools allow LLMs to perform actions by executing your Python functions (sync or async). Ideal for computations, API calls, or side effects (like `POST`/`PUT`). FastMCP handles schema generation from type hints and docstrings. Tools can return various types, including text, JSON-serializable objects, and even images using the [`fastmcp.Image`](https://gofastmcp.com/servers/tools#return-values) helper.
+Tools allow LLMs to perform actions by executing your Python functions (sync or async). Ideal for computations, API calls, or side effects (like `POST`/`PUT`). FastMCP handles schema generation from type hints and docstrings. Tools can return various types, including text, JSON-serializable objects, and even images or audio aided by the FastMCP media helper classes.
 
 ```python
 @mcp.tool
@@ -191,12 +195,13 @@ Learn more in the [**Prompts Documentation**](https://gofastmcp.com/servers/prom
 ### Context
 
 Access MCP session capabilities within your tools, resources, or prompts by adding a `ctx: Context` parameter. Context provides methods for:
-*   **Logging:** Log messages to MCP clients with `ctx.info()`, `ctx.error()`, etc.
-*   **LLM Sampling:** Use `ctx.sample()` to request completions from the client's LLM.
-*   **HTTP Request:** Use `ctx.http_request()` to make HTTP requests to other servers.
-*   **Resource Access:** Use `ctx.read_resource()` to access resources on the server
-*   **Progress Reporting:** Use `ctx.report_progress()` to report progress to the client.
-*   and more...
+
+- **Logging:** Log messages to MCP clients with `ctx.info()`, `ctx.error()`, etc.
+- **LLM Sampling:** Use `ctx.sample()` to request completions from the client's LLM.
+- **HTTP Request:** Use `ctx.http_request()` to make HTTP requests to other servers.
+- **Resource Access:** Use `ctx.read_resource()` to access resources on the server
+- **Progress Reporting:** Use `ctx.report_progress()` to report progress to the client.
+- and more...
 
 To access the context, add a parameter annotated as `Context` to any mcp-decorated function. FastMCP will automatically inject the correct context object when the function is called.
 
@@ -237,7 +242,7 @@ async def main():
         tools = await client.list_tools()
         print(f"Available tools: {tools}")
         result = await client.call_tool("add", {"a": 5, "b": 3})
-        print(f"Result: {result.text}")
+        print(f"Result: {result.content[0].text}")
 
     # Connect via SSE
     async with Client("http://localhost:8000/sse") as client:
@@ -303,7 +308,7 @@ Learn more in the [**Composition Documentation**](https://gofastmcp.com/patterns
 
 Automatically generate FastMCP servers from existing OpenAPI specifications (`FastMCP.from_openapi()`) or FastAPI applications (`FastMCP.from_fastapi()`), instantly bringing your web APIs to the MCP ecosystem.
 
-Learn more: [**OpenAPI Integration**](https://gofastmcp.com/servers/openapi#openapi-integration) | [**FastAPI Integration**](https://gofastmcp.com/deployment/asgi#fastapi-integration).
+Learn more: [**OpenAPI Integration**](https://gofastmcp.com/integrations/openapi) | [**FastAPI Integration**](https://gofastmcp.com/integrations/fastapi).
 
 ### Authentication & Security
 
@@ -336,16 +341,19 @@ if __name__ == "__main__":
 FastMCP supports three transport protocols:
 
 **STDIO (Default)**: Best for local tools and command-line scripts.
+
 ```python
 mcp.run(transport="stdio")  # Default, so transport argument is optional
 ```
 
 **Streamable HTTP**: Recommended for web deployments.
+
 ```python
-mcp.run(transport="streamable-http", host="127.0.0.1", port=8000, path="/mcp")
+mcp.run(transport="http", host="127.0.0.1", port=8000, path="/mcp")
 ```
 
 **SSE**: For compatibility with existing SSE clients.
+
 ```python
 mcp.run(transport="sse", host="127.0.0.1", port=8000)
 ```
@@ -358,22 +366,26 @@ Contributions are the core of open source! We welcome improvements and features.
 
 ### Prerequisites
 
-*   Python 3.10+
-*   [uv](https://docs.astral.sh/uv/) (Recommended for environment management)
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (Recommended for environment management)
 
 ### Setup
 
-1. Clone the repository: 
+1. Clone the repository:
+
    ```bash
    git clone https://github.com/jlowin/fastmcp.git 
    cd fastmcp
    ```
-2. Create and sync the environment: 
+
+2. Create and sync the environment:
+
    ```bash
    uv sync
    ```
+
    This installs all dependencies, including dev tools.
-   
+
 3. Activate the virtual environment (e.g., `source .venv/bin/activate` or via your IDE).
 
 ### Unit Tests
@@ -381,10 +393,13 @@ Contributions are the core of open source! We welcome improvements and features.
 FastMCP has a comprehensive unit test suite. All PRs must introduce or update tests as appropriate and pass the full suite.
 
 Run tests using pytest:
+
 ```bash
 pytest
 ```
+
 or if you want an overview of the code coverage
+
 ```bash
 uv run pytest --cov=src --cov=examples --cov-report=html
 ```
@@ -394,10 +409,13 @@ uv run pytest --cov=src --cov=examples --cov-report=html
 FastMCP uses `pre-commit` for code formatting, linting, and type-checking. All PRs must pass these checks (they run automatically in CI).
 
 Install the hooks locally:
+
 ```bash
 uv run pre-commit install
 ```
+
 The hooks will now run automatically on `git commit`. You can also run them manually at any time:
+
 ```bash
 pre-commit run --all-files
 # or via uv
@@ -406,11 +424,11 @@ uv run pre-commit run --all-files
 
 ### Pull Requests
 
-1.  Fork the repository on GitHub.
-2.  Create a feature branch from `main`.
-3.  Make your changes, including tests and documentation updates.
-4.  Ensure tests and pre-commit hooks pass.
-5.  Commit your changes and push to your fork.
-6.  Open a pull request against the `main` branch of `jlowin/fastmcp`.
+1. Fork the repository on GitHub.
+2. Create a feature branch from `main`.
+3. Make your changes, including tests and documentation updates.
+4. Ensure tests and pre-commit hooks pass.
+5. Commit your changes and push to your fork.
+6. Open a pull request against the `main` branch of `jlowin/fastmcp`.
 
 Please open an issue or discussion for questions or suggestions before starting significant work!

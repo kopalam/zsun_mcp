@@ -27,8 +27,8 @@ class TestResourceTemplate:
         assert template.uri_template == "test://{key}/{value}"
         assert template.name == "test"
         assert template.mime_type == "text/plain"  # default
-        test_input = {"key": "test", "value": 42}
-        assert template.fn(**test_input) == my_func(**test_input)
+
+        assert template.fn(key="test", value=42) == my_func(key="test", value=42)
 
     def test_template_matches(self):
         """Test matching URIs against a template."""
@@ -405,6 +405,7 @@ class TestMatchUriTemplate:
             ("test://a/b/c", None),
             ("test://a/x/b", {"x": "x"}),
             ("test://a/x/y/b", None),
+            ("test://a/1-2/b", {"x": "1-2"}),
         ],
     )
     def test_match_uri_template_single_param(
@@ -669,7 +670,7 @@ class TestContextHandling:
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
 
-        with context:
+        async with context:
             resource = await template.create_resource(
                 "test://42",
                 {"x": 42},
@@ -697,7 +698,7 @@ class TestContextHandling:
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
 
-        with context:
+        async with context:
             resource = await template.create_resource(
                 "test://42",
                 {"x": 42},

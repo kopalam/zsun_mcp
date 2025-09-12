@@ -60,3 +60,17 @@ dmypy.json
 *.sqlite
 *.db
 *.ddb
+
+# Claude worktree management
+.claude-wt/worktrees
+
+# Agents
+/PLAN.md
+/TODO.md
+/STATUS.md
+
+# Common FastMCP test files
+/test.py
+/server.py
+/client.py
+/test.json

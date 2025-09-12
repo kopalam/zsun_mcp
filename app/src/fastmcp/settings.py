@@ -1,10 +1,11 @@
 from __future__ import annotations as _annotations
 
 import inspect
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, ImportString, field_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -54,6 +55,25 @@ class ExtendedSettingsConfigDict(SettingsConfigDict, total=False):
     env_prefixes: list[str] | None
 
 
+class ExperimentalSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="FASTMCP_EXPERIMENTAL_",
+        extra="ignore",
+    )
+
+    enable_new_openapi_parser: Annotated[
+        bool,
+        Field(
+            description=inspect.cleandoc(
+                """
+                Whether to use the new OpenAPI parser. This parser was introduced
+                for testing in 2.11 and will become the default soon.
+                """
+            ),
+        ),
+    ] = False
+
+
 class Settings(BaseSettings):
     """FastMCP settings."""
 
@@ -63,7 +83,34 @@ class Settings(BaseSettings):
         extra="ignore",
         env_nested_delimiter="__",
         nested_model_default_partial_update=True,
+        validate_assignment=True,
     )
+
+    def get_setting(self, attr: str) -> Any:
+        """
+        Get a setting. If the setting contains one or more `__`, it will be
+        treated as a nested setting.
+        """
+        settings = self
+        while "__" in attr:
+            parent_attr, attr = attr.split("__", 1)
+            if not hasattr(settings, parent_attr):
+                raise AttributeError(f"Setting {parent_attr} does not exist.")
+            settings = getattr(settings, parent_attr)
+        return getattr(settings, attr)
+
+    def set_setting(self, attr: str, value: Any) -> None:
+        """
+        Set a setting. If the setting contains one or more `__`, it will be
+        treated as a nested setting.
+        """
+        settings = self
+        while "__" in attr:
+            parent_attr, attr = attr.split("__", 1)
+            if not hasattr(settings, parent_attr):
+                raise AttributeError(f"Setting {parent_attr} does not exist.")
+            settings = getattr(settings, parent_attr)
+        setattr(settings, attr, value)
 
     @classmethod
     def settings_customise_sources(
@@ -98,7 +145,19 @@ class Settings(BaseSettings):
     home: Path = Path.home() / ".fastmcp"
 
     test_mode: bool = False
+
+    log_enabled: bool = True
     log_level: LOG_LEVEL = "INFO"
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def normalize_log_level(cls, v):
+        if isinstance(v, str):
+            return v.upper()
+        return v
+
+    experimental: ExperimentalSettings = ExperimentalSettings()
+
     enable_rich_tracebacks: Annotated[
         bool,
         Field(
@@ -154,40 +213,12 @@ class Settings(BaseSettings):
         ),
     ] = "path"
 
-    tool_attempt_parse_json_args: Annotated[
-        bool,
-        Field(
-            default=False,
-            description=inspect.cleandoc(
-                """
-                Note: this enables a legacy behavior. If True, will attempt to parse
-                stringified JSON lists and objects strings in tool arguments before
-                passing them to the tool. This is an old behavior that can create
-                unexpected type coercion issues, but may be helpful for less powerful
-                LLMs that stringify JSON instead of passing actual lists and objects.
-                Defaults to False.
-                """
-            ),
-        ),
-    ] = False
-
     client_init_timeout: Annotated[
         float | None,
         Field(
             description="The timeout for the client's initialization handshake, in seconds. Set to None or 0 to disable.",
         ),
     ] = None
-
-    @model_validator(mode="after")
-    def setup_logging(self) -> Self:
-        """Finalize the settings."""
-        from fastmcp.utilities.logging import configure_logging
-
-        configure_logging(
-            self.log_level, enable_rich_tracebacks=self.enable_rich_tracebacks
-        )
-
-        return self
 
     # HTTP settings
     host: str = "127.0.0.1"
@@ -214,13 +245,10 @@ class Settings(BaseSettings):
         ),
     ] = False
 
-    server_dependencies: Annotated[
-        list[str],
-        Field(
-            default_factory=list,
-            description="List of dependencies to install in the server environment",
-        ),
-    ] = []
+    server_dependencies: list[str] = Field(
+        default_factory=list,
+        description="List of dependencies to install in the server environment",
+    )
 
     # StreamableHTTP settings
     json_response: bool = False
@@ -229,19 +257,31 @@ class Settings(BaseSettings):
     )
 
     # Auth settings
-    default_auth_provider: Annotated[
-        Literal["bearer_env"] | None,
+    server_auth: Annotated[
+        ImportString | None,
         Field(
             description=inspect.cleandoc(
                 """
-                Configure the authentication provider. This setting is intended only to
-                be used for remote confirugation of providers that fully support
-                environment variable configuration.
+                Configure the authentication provider for the server by specifying
+                the full module path to an AuthProvider class (e.g., 
+                'fastmcp.server.auth.providers.google.GoogleProvider').
+
+                The specified class will be imported and instantiated automatically.
+                Any class that inherits from AuthProvider can be used, including
+                custom implementations.
 
                 If None, no automatic configuration will take place.
 
                 This setting is *always* overriden by any auth provider passed to the
                 FastMCP constructor.
+
+                Note that most auth providers require additional configuration
+                that must be provided via env vars.
+
+                Examples:
+                  - fastmcp.server.auth.providers.google.GoogleProvider
+                  - fastmcp.server.auth.providers.jwt.JWTVerifier
+                  - mycompany.auth.CustomAuthProvider
                 """
             ),
         ),
@@ -274,5 +314,65 @@ class Settings(BaseSettings):
         ),
     ] = None
 
+    include_fastmcp_meta: Annotated[
+        bool,
+        Field(
+            default=True,
+            description=inspect.cleandoc(
+                """
+                Whether to include FastMCP meta in the server's MCP responses.
+                If True, a `_fastmcp` key will be added to the `meta` field of
+                all MCP component responses. This key will contain a dict of
+                various FastMCP-specific metadata, such as tags.
+                """
+            ),
+        ),
+    ] = True
 
-settings = Settings()
+    mounted_components_raise_on_load_error: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=inspect.cleandoc(
+                """
+                If True, errors encountered when loading mounted components (tools, resources, prompts)
+                will be raised instead of logged as warnings. This is useful for debugging
+                but will interrupt normal operation.
+                """
+            ),
+        ),
+    ] = False
+
+    show_cli_banner: Annotated[
+        bool,
+        Field(
+            default=True,
+            description=inspect.cleandoc(
+                """
+                If True, the server banner will be displayed when running the server via CLI.
+                This setting can be overridden by the --no-banner CLI flag.
+                Set to False via FASTMCP_SHOW_CLI_BANNER=false to suppress the banner.
+                """
+            ),
+        ),
+    ] = True
+
+
+def __getattr__(name: str):
+    """
+    Used to deprecate the module-level Image class; can be removed once it is no longer imported to root.
+    """
+    if name == "settings":
+        import fastmcp
+
+        settings = fastmcp.settings
+        # Deprecated in 2.10.2
+        if settings.deprecation_warnings:
+            warnings.warn(
+                "`from fastmcp.settings import settings` is deprecated. use `fastmcp.settings` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return settings
+
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

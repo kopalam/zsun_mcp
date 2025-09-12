@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import copy
+import logging
 import multiprocessing
 import socket
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import uvicorn
 
 from fastmcp import settings
+from fastmcp.client.auth.oauth import OAuth
 from fastmcp.utilities.http import find_available_port
 
 if TYPE_CHECKING:
@@ -20,7 +24,7 @@ if TYPE_CHECKING:
 @contextmanager
 def temporary_settings(**kwargs: Any):
     """
-    Temporarily override ControlFlow setting values.
+    Temporarily override FastMCP setting values.
 
     Args:
         **kwargs: The settings to override, including nested settings.
@@ -36,21 +40,18 @@ def temporary_settings(**kwargs: Any):
         assert fastmcp.settings.log_level == 'INFO'
         ```
     """
-    old_settings = copy.deepcopy(settings.model_dump())
+    old_settings = copy.deepcopy(settings)
 
     try:
         # apply the new settings
         for attr, value in kwargs.items():
-            if not hasattr(settings, attr):
-                raise AttributeError(f"Setting {attr} does not exist.")
-            setattr(settings, attr, value)
+            settings.set_setting(attr, value)
         yield
 
     finally:
         # restore the old settings
         for attr in kwargs:
-            if hasattr(settings, attr):
-                setattr(settings, attr, old_settings[attr])
+            settings.set_setting(attr, old_settings.get_setting(attr))
 
 
 def _run_server(mcp_server: FastMCP, transport: Literal["sse"], port: int) -> None:
@@ -75,6 +76,8 @@ def run_server_in_process(
     server_fn: Callable[..., None],
     *args,
     provide_host_and_port: bool = True,
+    host: str = "127.0.0.1",
+    port: int | None = None,
     **kwargs,
 ) -> Generator[str, None, None]:
     """
@@ -86,13 +89,16 @@ def run_server_in_process(
             not pickleable, so we need a function that creates and runs one.
         *args: Arguments to pass to the server function.
         provide_host_and_port: Whether to provide the host and port to the server function as kwargs.
+        host: Host to bind the server to (default: "127.0.0.1").
+        port: Port to bind the server to (default: find available port).
         **kwargs: Keyword arguments to pass to the server function.
 
     Returns:
         The server URL.
     """
-    host = "127.0.0.1"
-    port = find_available_port()
+    # Use provided port or find an available one
+    if port is None:
+        port = find_available_port()
 
     if provide_host_and_port:
         kwargs |= {"host": host, "port": port}
@@ -129,3 +135,63 @@ def run_server_in_process(
         proc.join(timeout=2)
         if proc.is_alive():
             raise RuntimeError("Server process failed to terminate even after kill")
+
+
+@contextmanager
+def caplog_for_fastmcp(caplog):
+    """Context manager to capture logs from FastMCP loggers even when propagation is disabled."""
+    caplog.clear()
+    logger = logging.getLogger("FastMCP")
+    logger.addHandler(caplog.handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(caplog.handler)
+
+
+class HeadlessOAuth(OAuth):
+    """
+    OAuth provider that bypasses browser interaction for testing.
+
+    This simulates the complete OAuth flow programmatically by making HTTP requests
+    instead of opening a browser and running a callback server. Useful for automated testing.
+    """
+
+    def __init__(self, mcp_url: str, **kwargs):
+        """Initialize HeadlessOAuth with stored response tracking."""
+        self._stored_response = None
+        super().__init__(mcp_url, **kwargs)
+
+    async def redirect_handler(self, authorization_url: str) -> None:
+        """Make HTTP request to authorization URL and store response for callback handler."""
+        async with httpx.AsyncClient() as client:
+            response = await client.get(authorization_url, follow_redirects=False)
+            self._stored_response = response
+
+    async def callback_handler(self) -> tuple[str, str | None]:
+        """Parse stored response and return (auth_code, state)."""
+        if not self._stored_response:
+            raise RuntimeError(
+                "No authorization response stored. redirect_handler must be called first."
+            )
+
+        response = self._stored_response
+
+        # Extract auth code from redirect location
+        if response.status_code == 302:
+            redirect_url = response.headers["location"]
+            parsed = urlparse(redirect_url)
+            query_params = parse_qs(parsed.query)
+
+            if "error" in query_params:
+                error = query_params["error"][0]
+                error_desc = query_params.get("error_description", ["Unknown error"])[0]
+                raise RuntimeError(
+                    f"OAuth authorization failed: {error} - {error_desc}"
+                )
+
+            auth_code = query_params["code"][0]
+            state = query_params.get("state", [None])[0]
+            return auth_code, state
+        else:
+            raise RuntimeError(f"Authorization failed: {response.status_code}")

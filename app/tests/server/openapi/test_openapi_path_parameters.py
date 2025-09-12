@@ -301,20 +301,11 @@ async def test_array_query_param_with_fastapi():
 
         # Single day
         result = await client.call_tool(tool_name, {"days": ["monday"]})
-        # Client returns TextContent objects, so parse the JSON
-        assert len(result) == 1
-        assert result[0].type == "text"
-        import json
-
-        result_data = json.loads(result[0].text)
-        assert result_data == {"selected": ["monday"]}
+        assert result.data == {"selected": ["monday"]}
 
         # Multiple days
         result = await client.call_tool(tool_name, {"days": ["monday", "tuesday"]})
-        assert len(result) == 1
-        assert result[0].type == "text"
-        result_data = json.loads(result[0].text)
-        assert result_data == {"selected": ["monday", "tuesday"]}
+        assert result.data == {"selected": ["monday", "tuesday"]}
 
 
 async def test_array_query_parameter_format(mock_client):
@@ -329,9 +320,9 @@ async def test_array_query_parameter_format(mock_client):
                 name="days",
                 location="query",  # This is a query parameter
                 required=True,
+                explode=False,  # Set explode=False to test comma-separated formatting
                 schema={
                     "type": "array",
-                    "explode": False,  # Set explode=False to test comma-separated formatting
                     "items": {
                         "type": "string",
                         "enum": [
@@ -399,9 +390,9 @@ async def test_array_query_parameter_exploded_format(mock_client):
                 name="days",
                 location="query",  # This is a query parameter
                 required=True,
+                explode=True,  # Set explode=True for separate parameter serialization
                 schema={
                     "type": "array",
-                    "explode": True,  # Set explode=True for separate parameter serialization
                     "items": {
                         "type": "string",
                         "enum": [
@@ -455,3 +446,179 @@ async def test_array_query_parameter_exploded_format(mock_client):
         json=None,
         timeout=None,
     )
+
+
+async def test_empty_array_parameter_exclusion(mock_client):
+    """Test that empty array parameters are excluded from requests."""
+    # Create a route with array query parameter
+    route = HTTPRoute(
+        path="/search",
+        method="GET",
+        operation_id="search-operation",
+        parameters=[
+            ParameterInfo(
+                name="tags",
+                location="query",
+                required=False,
+                schema={
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            ),
+            ParameterInfo(
+                name="categories",
+                location="query",
+                required=False,
+                schema={
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            ),
+            ParameterInfo(
+                name="limit",
+                location="query",
+                required=False,
+                schema={"type": "integer"},
+            ),
+        ],
+    )
+
+    # Create the tool
+    tool = OpenAPITool(
+        client=mock_client,
+        route=route,
+        name="search-operation",
+        description="Search operation",
+        parameters={},
+    )
+
+    # Test with empty array - should be excluded
+    await tool.run(
+        {
+            "tags": [],  # Empty array should be excluded
+            "categories": ["tech", "news"],  # Non-empty array should be included
+            "limit": 10,  # Non-array param should be included
+        }
+    )
+
+    # Check that empty array is excluded, but others are included
+    mock_client.request.assert_called_with(
+        method="GET",
+        url="/search",
+        params={
+            "categories": ["tech", "news"],  # Only non-empty array included
+            "limit": 10,
+        },
+        headers={},
+        json=None,
+        timeout=None,
+    )
+
+
+async def test_empty_deep_object_parameter_exclusion(mock_client):
+    """Test that empty dict parameters with deepObject style are excluded from requests."""
+    # Create a route with deepObject query parameter
+    route = HTTPRoute(
+        path="/filter",
+        method="GET",
+        operation_id="filter-operation",
+        parameters=[
+            ParameterInfo(
+                name="filters",
+                location="query",
+                required=False,
+                style="deepObject",
+                explode=True,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "age": {"type": "integer"},
+                    },
+                },
+            ),
+            ParameterInfo(
+                name="options",
+                location="query",
+                required=False,
+                style="deepObject",
+                explode=True,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "sort": {"type": "string"},
+                        "order": {"type": "string"},
+                    },
+                },
+            ),
+            ParameterInfo(
+                name="page",
+                location="query",
+                required=False,
+                schema={"type": "integer"},
+            ),
+        ],
+    )
+
+    # Create the tool
+    tool = OpenAPITool(
+        client=mock_client,
+        route=route,
+        name="filter-operation",
+        description="Filter operation",
+        parameters={},
+    )
+
+    # Test with empty dict - should be excluded
+    await tool.run(
+        {
+            "filters": {},  # Empty dict should be excluded
+            "options": {
+                "sort": "name",
+                "order": "asc",
+            },  # Non-empty dict should be included
+            "page": 1,  # Non-dict param should be included
+        }
+    )
+
+    # Check that empty dict is excluded, but others are included
+    mock_client.request.assert_called_with(
+        method="GET",
+        url="/filter",
+        params={
+            "options[sort]": "name",  # Deep object style for non-empty dict
+            "options[order]": "asc",
+            "page": 1,
+        },
+        headers={},
+        json=None,
+        timeout=None,
+    )
+
+
+def test_parameter_location_enum_handling():
+    """Test that ParameterLocation enum values are handled correctly (issue #950)."""
+    from enum import Enum
+
+    # Create a mock ParameterLocation enum like the one from openapi_pydantic
+    class MockParameterLocation(Enum):
+        PATH = "path"
+        QUERY = "query"
+        HEADER = "header"
+        COOKIE = "cookie"
+
+    # Test the enum handling logic directly (reproduces the fix in openapi.py)
+    test_cases = [
+        (MockParameterLocation.PATH, "path"),
+        (MockParameterLocation.QUERY, "query"),
+        (MockParameterLocation.HEADER, "header"),
+        (MockParameterLocation.COOKIE, "cookie"),
+        ("path", "path"),  # Also test that strings work
+        ("query", "query"),
+    ]
+
+    for param_in, expected_str in test_cases:
+        # This is the enum handling logic from the fix
+        param_in_str = param_in.value if isinstance(param_in, Enum) else param_in
+        assert param_in_str == expected_str
+        assert isinstance(param_in_str, str)

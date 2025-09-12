@@ -5,18 +5,22 @@ from typing import Annotated, Any
 
 import pydantic_core
 import pytest
-from mcp.types import ImageContent
+from inline_snapshot import snapshot
+from mcp.types import ImageContent, TextContent
 from pydantic import BaseModel
 
-from fastmcp import Context, FastMCP, Image
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import NotFoundError, ToolError
 from fastmcp.tools import FunctionTool, ToolManager
 from fastmcp.tools.tool import Tool
-from fastmcp.utilities.tests import temporary_settings
+from fastmcp.tools.tool_transform import ArgTransformConfig, ToolTransformConfig
+from fastmcp.utilities.tests import caplog_for_fastmcp, temporary_settings
+from fastmcp.utilities.types import Image
+from tests.conftest import get_fn_name
 
 
 class TestAddTools:
-    def test_basic_function(self):
+    async def test_basic_function(self):
         """Test registering and running a basic function."""
 
         def add(a: int, b: int) -> int:
@@ -27,7 +31,7 @@ class TestAddTools:
         tool = Tool.from_function(add)
         manager.add_tool(tool)
 
-        tool = manager.get_tool("add")
+        tool = await manager.get_tool("add")
         assert tool is not None
         assert tool.name == "add"
         assert tool.description == "Add two numbers."
@@ -45,13 +49,13 @@ class TestAddTools:
         tool = Tool.from_function(fetch_data)
         manager.add_tool(tool)
 
-        tool = manager.get_tool("fetch_data")
+        tool = await manager.get_tool("fetch_data")
         assert tool is not None
         assert tool.name == "fetch_data"
         assert tool.description == "Fetch data from URL."
         assert tool.parameters["properties"]["url"]["type"] == "string"
 
-    def test_pydantic_model_function(self):
+    async def test_pydantic_model_function(self):
         """Test registering a function that takes a Pydantic model."""
 
         class UserInput(BaseModel):
@@ -66,7 +70,7 @@ class TestAddTools:
         tool = Tool.from_function(create_user)
         manager.add_tool(tool)
 
-        tool = manager.get_tool("create_user")
+        tool = await manager.get_tool("create_user")
         assert tool is not None
         assert tool.name == "create_user"
         assert tool.description == "Create a new user."
@@ -74,7 +78,7 @@ class TestAddTools:
         assert "age" in tool.parameters["$defs"]["UserInput"]["properties"]
         assert "flag" in tool.parameters["properties"]
 
-    def test_callable_object(self):
+    async def test_callable_object(self):
         class Adder:
             """Adds two numbers."""
 
@@ -86,7 +90,7 @@ class TestAddTools:
         tool = Tool.from_function(Adder())
         manager.add_tool(tool)
 
-        tool = manager.get_tool("Adder")
+        tool = await manager.get_tool("Adder")
         assert tool is not None
         assert tool.name == "Adder"
         assert tool.description == "Adds two numbers."
@@ -94,7 +98,7 @@ class TestAddTools:
         assert tool.parameters["properties"]["x"]["type"] == "integer"
         assert tool.parameters["properties"]["y"]["type"] == "integer"
 
-    def test_async_callable_object(self):
+    async def test_async_callable_object(self):
         class Adder:
             """Adds two numbers."""
 
@@ -106,7 +110,7 @@ class TestAddTools:
         tool = Tool.from_function(Adder())
         manager.add_tool(tool)
 
-        tool = manager.get_tool("Adder")
+        tool = await manager.get_tool("Adder")
         assert tool is not None
         assert tool.name == "Adder"
         assert tool.description == "Adds two numbers."
@@ -122,10 +126,11 @@ class TestAddTools:
         tool = Tool.from_function(image_tool)
         manager.add_tool(tool)
 
-        tool = manager.get_tool("image_tool")
+        tool = await manager.get_tool("image_tool")
         result = await tool.run({"data": "test.png"})
         assert tool.parameters["properties"]["data"]["type"] == "string"
-        assert isinstance(result[0], ImageContent)
+        assert isinstance(result.content[0], ImageContent)
+        assert result.structured_content is None
 
     def test_add_noncallable_tool(self):
         manager = ToolManager()
@@ -147,7 +152,7 @@ class TestAddTools:
             tool = Tool.from_function(lambda x: x)
             manager.add_tool(tool)
 
-    def test_remove_tool_successfully(self):
+    async def test_remove_tool_successfully(self):
         """Test removing an added tool by key."""
         manager = ToolManager()
 
@@ -156,19 +161,19 @@ class TestAddTools:
 
         tool = Tool.from_function(add)
         manager.add_tool(tool)
-        assert manager.get_tool("add") is not None
+        assert await manager.get_tool("add") is not None
 
         manager.remove_tool("add")
         with pytest.raises(NotFoundError):
-            manager.get_tool("add")
+            await manager.get_tool("add")
 
     def test_remove_tool_missing_key(self):
         """Test removing a tool that does not exist raises NotFoundError."""
         manager = ToolManager()
-        with pytest.raises(NotFoundError, match=f"Unknown tool: {'missing'}"):
+        with pytest.raises(NotFoundError, match="Tool 'missing' not found"):
             manager.remove_tool("missing")
 
-    def test_warn_on_duplicate_tools(self, caplog):
+    async def test_warn_on_duplicate_tools(self, caplog):
         """Test warning on duplicate tools."""
         manager = ToolManager(duplicate_behavior="warn")
 
@@ -177,12 +182,14 @@ class TestAddTools:
 
         tool1 = Tool.from_function(test_fn, name="test_tool")
         manager.add_tool(tool1)
-        tool2 = Tool.from_function(test_fn, name="test_tool")
-        manager.add_tool(tool2)
+
+        with caplog_for_fastmcp(caplog):
+            tool2 = Tool.from_function(test_fn, name="test_tool")
+            manager.add_tool(tool2)
 
         assert "Tool already exists: test_tool" in caplog.text
         # Should have the tool
-        assert manager.get_tool("test_tool") is not None
+        assert await manager.get_tool("test_tool") is not None
 
     def test_disable_warn_on_duplicate_tools(self, caplog):
         """Test disabling warning on duplicate tools."""
@@ -212,7 +219,7 @@ class TestAddTools:
             tool2 = Tool.from_function(test_fn, name="test_tool")
             manager.add_tool(tool2)
 
-    def test_replace_duplicate_tools(self):
+    async def test_replace_duplicate_tools(self):
         """Test replacing duplicate tools."""
         manager = ToolManager(duplicate_behavior="replace")
 
@@ -228,12 +235,12 @@ class TestAddTools:
         manager.add_tool(result)
 
         # Should have replaced with the new tool
-        tool = manager.get_tool("test_tool")
+        tool = await manager.get_tool("test_tool")
         assert tool is not None
         assert isinstance(tool, FunctionTool)
-        assert tool.fn.__name__ == "replacement_fn"
+        assert get_fn_name(tool.fn) == "replacement_fn"
 
-    def test_ignore_duplicate_tools(self):
+    async def test_ignore_duplicate_tools(self):
         """Test ignoring duplicate tools."""
         manager = ToolManager(duplicate_behavior="ignore")
 
@@ -249,19 +256,65 @@ class TestAddTools:
         manager.add_tool(result)
 
         # Should keep the original
-        tool = manager.get_tool("test_tool")
+        tool = await manager.get_tool("test_tool")
         assert tool is not None
         assert isinstance(tool, FunctionTool)
-        assert tool.fn.__name__ == "original_fn"
+        assert get_fn_name(tool.fn) == "original_fn"
         # Result should be the original tool
         assert isinstance(result, FunctionTool)
-        assert result.fn.__name__ == "replacement_fn"
+        assert get_fn_name(result.fn) == "replacement_fn"
+
+
+class TestListTools:
+    async def test_list_tools_with_transformed_names(self):
+        """Test listing tools with transformations."""
+
+        tool_manager = ToolManager()
+
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        tool = Tool.from_function(add)
+        tool_manager.add_tool(tool)
+
+        tool_manager.add_tool_transformation(
+            "add", ToolTransformConfig(name="add_transformed")
+        )
+        tools = await tool_manager.list_tools()
+        tools_by_name = {tool.name: tool for tool in tools}
+        assert "add_transformed" in tools_by_name
+        assert "add" not in tools_by_name
+
+    async def test_list_tools_with_transforms(self):
+        """Test listing tools with transformations."""
+
+        tool_manager = ToolManager()
+
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        tool = Tool.from_function(add)
+        tool_manager.add_tool(tool)
+
+        tool_manager.add_tool_transformation(
+            "add",
+            ToolTransformConfig(
+                name="add_transformed", description=None, tags={"enabled_tools"}
+            ),
+        )
+        tools = await tool_manager.list_tools()
+        tools_by_name = {tool.name: tool for tool in tools}
+        assert "add_transformed" in tools_by_name
+        assert "add" not in tools_by_name
+        assert tools_by_name["add_transformed"].description is None
+        assert tools_by_name["add_transformed"].tags == {"enabled_tools"}
 
 
 class TestToolTags:
     """Test functionality related to tool tags."""
 
-    def test_add_tool_with_tags(self):
+    async def test_add_tool_with_tags(self):
         """Test adding tags to a tool."""
 
         def example_tool(x: int) -> int:
@@ -273,11 +326,11 @@ class TestToolTags:
         manager.add_tool(tool)
 
         assert tool.tags == {"math", "utility"}
-        tool = manager.get_tool("example_tool")
+        tool = await manager.get_tool("example_tool")
         assert tool is not None
         assert tool.tags == {"math", "utility"}
 
-    def test_add_tool_with_empty_tags(self):
+    async def test_add_tool_with_empty_tags(self):
         """Test adding a tool with empty tags set."""
 
         def example_tool(x: int) -> int:
@@ -290,7 +343,7 @@ class TestToolTags:
 
         assert tool.tags == set()
 
-    def test_add_tool_with_none_tags(self):
+    async def test_add_tool_with_none_tags(self):
         """Test adding a tool with None tags."""
 
         def example_tool(x: int) -> int:
@@ -303,7 +356,7 @@ class TestToolTags:
 
         assert tool.tags == set()
 
-    def test_list_tools_with_tags(self):
+    async def test_list_tools_with_tags(self):
         """Test listing tools with specific tags."""
 
         def math_tool(x: int) -> int:
@@ -327,12 +380,16 @@ class TestToolTags:
         manager.add_tool(tool3)
 
         # Check if we can filter by tags when listing tools
-        math_tools = [tool for tool in manager.list_tools() if "math" in tool.tags]
+        math_tools = [
+            tool for tool in (await manager.get_tools()).values() if "math" in tool.tags
+        ]
         assert len(math_tools) == 2
         assert {tool.name for tool in math_tools} == {"math_tool", "mixed_tool"}
 
         utility_tools = [
-            tool for tool in manager.list_tools() if "utility" in tool.tags
+            tool
+            for tool in (await manager.get_tools()).values()
+            if "utility" in tool.tags
         ]
         assert len(utility_tools) == 2
         assert {tool.name for tool in utility_tools} == {"string_tool", "mixed_tool"}
@@ -349,7 +406,8 @@ class TestCallTools:
         manager.add_tool(tool)
         result = await manager.call_tool("add", {"a": 1, "b": 2})
 
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        assert result.content[0].text == "3"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": 3}
 
     async def test_call_async_tool(self):
         async def double(n: int) -> int:
@@ -360,7 +418,8 @@ class TestCallTools:
         tool = Tool.from_function(double)
         manager.add_tool(tool)
         result = await manager.call_tool("double", {"n": 5})
-        assert result[0].text == "10"  # type: ignore[attr-defined]
+        assert result.content[0].text == "10"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": 10}
 
     async def test_call_tool_callable_object(self):
         class Adder:
@@ -374,7 +433,8 @@ class TestCallTools:
         tool = Tool.from_function(Adder())
         manager.add_tool(tool)
         result = await manager.call_tool("Adder", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        assert result.content[0].text == "3"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": 3}
 
     async def test_call_tool_callable_object_async(self):
         class Adder:
@@ -388,7 +448,8 @@ class TestCallTools:
         tool = Tool.from_function(Adder())
         manager.add_tool(tool)
         result = await manager.call_tool("Adder", {"x": 1, "y": 2})
-        assert result[0].text == "3"  # type: ignore[attr-defined]
+        assert result.content[0].text == "3"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": 3}
 
     async def test_call_tool_with_default_args(self):
         def add(a: int, b: int = 1) -> int:
@@ -400,7 +461,8 @@ class TestCallTools:
         manager.add_tool(tool)
         result = await manager.call_tool("add", {"a": 1})
 
-        assert result[0].text == "2"  # type: ignore[attr-defined]
+        assert result.content[0].text == "2"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": 2}
 
     async def test_call_tool_with_missing_args(self):
         def add(a: int, b: int) -> int:
@@ -415,8 +477,41 @@ class TestCallTools:
 
     async def test_call_unknown_tool(self):
         manager = ToolManager()
-        with pytest.raises(NotFoundError, match="Unknown tool: unknown"):
+        with pytest.raises(NotFoundError, match="Tool 'unknown' not found"):
             await manager.call_tool("unknown", {"a": 1})
+
+    async def test_call_transformed_tool(self):
+        manager = ToolManager()
+
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        tool = Tool.from_function(add)
+        manager.add_tool(tool)
+
+        manager.add_tool_transformation(
+            "add",
+            ToolTransformConfig(
+                name="add_transformed",
+                description=None,
+                tags={"enabled_tools"},
+                arguments={
+                    "a": ArgTransformConfig(
+                        name="a_transformed", description=None, default=1
+                    ),
+                    "b": ArgTransformConfig(
+                        name="b_transformed", description=None, default=2
+                    ),
+                },
+            ),
+        )
+
+        result = await manager.call_tool(
+            "add_transformed", {"a_transformed": 1, "b_transformed": 2}
+        )
+        assert result.content[0].text == "3"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": 3}
 
     async def test_call_tool_with_list_int_input(self):
         def sum_vals(vals: list[int]) -> int:
@@ -427,22 +522,8 @@ class TestCallTools:
         manager.add_tool(tool)
 
         result = await manager.call_tool("sum_vals", {"vals": [1, 2, 3]})
-        assert result[0].text == "6"  # type: ignore[attr-defined]
-
-    async def test_call_tool_with_list_int_input_legacy_behavior(self):
-        """Legacy behavior -- parse a stringified JSON object"""
-
-        def sum_vals(vals: list[int]) -> int:
-            return sum(vals)
-
-        manager = ToolManager()
-        tool = Tool.from_function(sum_vals)
-        manager.add_tool(tool)
-        # Try both with plain list and with JSON list
-
-        with temporary_settings(tool_attempt_parse_json_args=True):
-            result = await manager.call_tool("sum_vals", {"vals": "[1, 2, 3]"})
-            assert result[0].text == "6"  # type: ignore[attr-defined]
+        assert result.content[0].text == "6"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": 6}
 
     async def test_call_tool_with_list_str_or_str_input(self):
         def concat_strs(vals: list[str] | str) -> str:
@@ -454,27 +535,12 @@ class TestCallTools:
 
         # Try both with plain python object and with JSON list
         result = await manager.call_tool("concat_strs", {"vals": ["a", "b", "c"]})
-        assert result[0].text == "abc"  # type: ignore[attr-defined]
+        assert result.content[0].text == "abc"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": "abc"}
 
         result = await manager.call_tool("concat_strs", {"vals": "a"})
-        assert result[0].text == "a"  # type: ignore[attr-defined]
-
-    async def test_call_tool_with_list_str_or_str_input_legacy_behavior(self):
-        """Legacy behavior -- parse a stringified JSON object"""
-
-        def concat_strs(vals: list[str] | str) -> str:
-            return vals if isinstance(vals, str) else "".join(vals)
-
-        manager = ToolManager()
-        tool = Tool.from_function(concat_strs)
-        manager.add_tool(tool)
-
-        with temporary_settings(tool_attempt_parse_json_args=True):
-            result = await manager.call_tool("concat_strs", {"vals": '["a", "b", "c"]'})
-            assert result[0].text == "abc"  # type: ignore[attr-defined]
-
-            result = await manager.call_tool("concat_strs", {"vals": '"a"'})
-            assert result[0].text == "a"  # type: ignore[attr-defined]
+        assert result.content[0].text == "a"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": "a"}
 
     async def test_call_tool_with_complex_model(self):
         class MyShrimpTank(BaseModel):
@@ -494,7 +560,7 @@ class TestCallTools:
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
 
-        with context:
+        async with context:
             result = await manager.call_tool(
                 "name_shrimp",
                 {
@@ -505,7 +571,12 @@ class TestCallTools:
                 },
             )
 
-        assert result[0].text == '[\n  "rex",\n  "gertrude"\n]'  # type: ignore[attr-defined]
+        # Adjacent non-MCP list items are combined into single content block
+        assert len(result.content) == 1
+        assert result.content == snapshot(
+            [TextContent(type="text", text='["rex","gertrude"]')]
+        )
+        assert result.structured_content == snapshot({"result": ["rex", "gertrude"]})
 
     async def test_call_tool_with_custom_serializer(self):
         """Test that a custom serializer provided to FastMCP is used by tools."""
@@ -524,7 +595,8 @@ class TestCallTools:
             return {"key": "value", "number": 123}
 
         result = await manager.call_tool("get_data", {})
-        assert result[0].text == 'CUSTOM:{"key": "value", "number": 123}'  # type: ignore[attr-defined]
+        assert result.content[0].text == 'CUSTOM:{"key": "value", "number": 123}'  # type: ignore[attr-defined]
+        assert result.structured_content == {"key": "value", "number": 123}
 
     async def test_call_tool_with_list_result_custom_serializer(self):
         """Test that a custom serializer provided to FastMCP is used by tools that return lists."""
@@ -545,9 +617,23 @@ class TestCallTools:
             ]
 
         result = await manager.call_tool("get_data", {})
-        assert (
-            result[0].text  # type: ignore[attr-defined]
-            == 'CUSTOM:[{"key": "value", "number": 123}, {"key": "value2", "number": 456}]'  # type: ignore[attr-defined]
+        # Adjacent non-MCP list items get combined with custom serializer applied to each
+        assert len(result.content) == 1
+        assert result.content == snapshot(
+            [
+                TextContent(
+                    type="text",
+                    text='CUSTOM:[{"key": "value", "number": 123}, {"key": "value2", "number": 456}]',
+                )
+            ]
+        )
+        assert result.structured_content == snapshot(
+            {
+                "result": [
+                    {"key": "value", "number": 123},
+                    {"key": "value2", "number": 456},
+                ]
+            }
         )
 
     async def test_custom_serializer_fallback_on_error(self):
@@ -566,7 +652,11 @@ class TestCallTools:
             return uuid_result
 
         result = await manager.call_tool("get_data", {})
-        assert result[0].text == pydantic_core.to_json(uuid_result).decode()  # type: ignore[attr-defined]
+        assert (
+            result.content[0].text  # type: ignore[attr-defined]
+            == pydantic_core.to_json(uuid_result).decode()
+        )
+        assert result.structured_content == {"result": str(uuid_result)}
 
 
 class TestToolSchema:
@@ -634,9 +724,10 @@ class TestContextHandling:
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
 
-        with context:
+        async with context:
             result = await manager.call_tool("tool_with_context", {"x": 42})
-            assert result[0].text == "42"  # type: ignore[attr-defined]
+            assert result.content[0].text == "42"  # type: ignore[attr-defined]
+            assert result.structured_content == {"result": "42"}
 
     async def test_context_injection_async(self):
         """Test that context is properly injected in async tools."""
@@ -652,9 +743,10 @@ class TestContextHandling:
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
 
-        with context:
+        async with context:
             result = await manager.call_tool("async_tool", {"x": 42})
-            assert result[0].text == "42"  # type: ignore[attr-defined]
+            assert result.content[0].text == "42"  # type: ignore[attr-defined]
+            assert result.structured_content == {"result": "42"}
 
     async def test_context_optional(self):
         """Test that context is optional when calling tools."""
@@ -670,9 +762,10 @@ class TestContextHandling:
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
 
-        with context:
+        async with context:
             result = await manager.call_tool("tool_with_context", {"x": 42})
-            assert result[0].text == "42"  # type: ignore[attr-defined]
+            assert result.content[0].text == "42"  # type: ignore[attr-defined]
+            assert result.structured_content == {"result": 42}
 
     def test_parameterized_context_parameter_detection(self):
         """Test that context parameters are properly detected in
@@ -717,7 +810,7 @@ class TestContextHandling:
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
 
-        with context:
+        async with context:
             with pytest.raises(
                 ToolError, match="Error calling tool 'tool_with_context'"
             ):
@@ -727,7 +820,7 @@ class TestContextHandling:
 class TestCustomToolNames:
     """Test adding tools with custom names that differ from their function names."""
 
-    def test_add_tool_with_custom_name(self):
+    async def test_add_tool_with_custom_name(self):
         """Test adding a tool with a custom name parameter using add_tool_from_fn."""
 
         def original_fn(x: int) -> int:
@@ -738,15 +831,15 @@ class TestCustomToolNames:
         manager.add_tool(tool)
 
         # The tool is stored under the custom name and its .name is also set to custom_name
-        assert manager.get_tool("custom_name") is not None
+        assert await manager.get_tool("custom_name") is not None
         assert tool.name == "custom_name"
         assert isinstance(tool, FunctionTool)
-        assert tool.fn.__name__ == "original_fn"
+        assert get_fn_name(tool.fn) == "original_fn"
         # The tool should not be accessible via its original function name
-        with pytest.raises(NotFoundError, match="Unknown tool: original_fn"):
-            manager.get_tool("original_fn")
+        with pytest.raises(NotFoundError, match="Tool 'original_fn' not found"):
+            await manager.get_tool("original_fn")
 
-    def test_add_tool_object_with_custom_key(self):
+    async def test_add_tool_object_with_custom_key(self):
         """Test adding a Tool object with a custom key using add_tool()."""
 
         def fn(x: int) -> int:
@@ -755,16 +848,17 @@ class TestCustomToolNames:
         # Create a tool with a specific name
         tool = Tool.from_function(fn, name="my_tool")
         manager = ToolManager()
-        # Store it under a different name
-        manager.add_tool(tool, key="proxy_tool")
+        # Use model_copy to create a new tool with the custom key
+        tool_with_custom_key = tool.model_copy(key="proxy_tool")
+        manager.add_tool(tool_with_custom_key)
         # The tool is accessible under the key
-        stored = manager.get_tool("proxy_tool")
+        stored = await manager.get_tool("proxy_tool")
         assert stored is not None
         # But the tool's .name is unchanged
         assert stored.name == "my_tool"
         # The tool is not accessible under its original name
-        with pytest.raises(NotFoundError, match="Unknown tool: my_tool"):
-            manager.get_tool("my_tool")
+        with pytest.raises(NotFoundError, match="Tool 'my_tool' not found"):
+            await manager.get_tool("my_tool")
 
     async def test_call_tool_with_custom_name(self):
         """Test calling a tool added with a custom name."""
@@ -779,13 +873,14 @@ class TestCustomToolNames:
 
         # Tool should be callable by its custom name
         result = await manager.call_tool("custom_multiply", {"a": 5, "b": 3})
-        assert result[0].text == "15"  # type: ignore[attr-defined]
+        assert result.content[0].text == "15"  # type: ignore[attr-defined]
+        assert result.structured_content == {"result": 15}
 
         # Original name should not be registered
-        with pytest.raises(NotFoundError, match="Unknown tool: multiply"):
+        with pytest.raises(NotFoundError, match="Tool 'multiply' not found"):
             await manager.call_tool("multiply", {"a": 5, "b": 3})
 
-    def test_replace_tool_keeps_original_name(self):
+    async def test_replace_tool_keeps_original_name(self):
         """Test that replacing a tool with "replace" keeps the original name."""
 
         def original_fn(x: int) -> int:
@@ -807,7 +902,7 @@ class TestCustomToolNames:
         manager.add_tool(replacement_tool)
 
         # The tool object should have been replaced
-        stored_tool = manager.get_tool("test_tool")
+        stored_tool = await manager.get_tool("test_tool")
         assert stored_tool is not None
         assert stored_tool == replacement_tool
 
@@ -816,7 +911,7 @@ class TestCustomToolNames:
 
         # But the function is different
         assert isinstance(stored_tool, FunctionTool)
-        assert stored_tool.fn.__name__ == "replacement_fn"
+        assert get_fn_name(stored_tool.fn) == "replacement_fn"
 
 
 class TestToolErrorHandling:
@@ -915,3 +1010,44 @@ class TestToolErrorHandling:
         # Exception message should contain the tool name but not the internal details
         assert "Error calling tool 'async_buggy_tool'" in str(excinfo.value)
         assert "Internal async error details" not in str(excinfo.value)
+
+
+class TestMountedComponentsRaiseOnLoadError:
+    """Test the mounted_components_raise_on_load_error setting."""
+
+    async def test_mounted_components_raise_on_load_error_default_false(self):
+        """Test that by default, mounted component load errors are warned and not raised."""
+        import fastmcp
+
+        # Ensure default setting is False
+        assert fastmcp.settings.mounted_components_raise_on_load_error is False
+
+        parent_mcp = FastMCP("ParentServer")
+        child_mcp = FastMCP("FailingChildServer")
+
+        # Create a failing mounted server by corrupting it
+        parent_mcp.mount(child_mcp, prefix="child")
+        # Corrupt the child server to make it fail during tool loading
+        child_mcp._tool_manager._mounted_servers.append("invalid")  # type: ignore
+
+        # Should not raise, just warn
+        tools = await parent_mcp._tool_manager.list_tools()
+        assert isinstance(tools, list)  # Should return empty list, not raise
+
+    async def test_mounted_components_raise_on_load_error_true(self):
+        """Test that when enabled, mounted component load errors are raised."""
+        parent_mcp = FastMCP("ParentServer")
+        child_mcp = FastMCP("FailingChildServer")
+
+        # Create a failing mounted server
+        parent_mcp.mount(child_mcp, prefix="child")
+        # Corrupt the child server to make it fail during tool loading
+        child_mcp._tool_manager._mounted_servers.append("invalid")  # type: ignore
+
+        # Use temporary settings context manager
+        with temporary_settings(mounted_components_raise_on_load_error=True):
+            # Should raise the exception
+            with pytest.raises(
+                AttributeError, match="'str' object has no attribute 'server'"
+            ):
+                await parent_mcp._tool_manager.list_tools()

@@ -1,7 +1,8 @@
 import asyncio
 import json
 import sys
-from collections.abc import Generator
+from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, call
 
 import pytest
 import uvicorn
@@ -9,6 +10,7 @@ from mcp import McpError
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
+from fastmcp import Context
 from fastmcp.client import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server.dependencies import get_http_request
@@ -26,6 +28,16 @@ def fastmcp_server():
         """Greet someone by name."""
         return f"Hello, {name}!"
 
+    @server.tool
+    async def elicit(ctx: Context) -> str:
+        """Elicit a response from the user."""
+        result = await ctx.elicit("What is your name?", response_type=str)
+
+        if result.action == "accept":
+            return f"You said your name was: {result.data}!"  # ty: ignore[possibly-unbound-attribute]
+        else:
+            return "No name provided"
+
     # Add a second tool
     @server.tool
     def add(a: int, b: int) -> int:
@@ -37,6 +49,13 @@ def fastmcp_server():
         """Sleep for a given number of seconds."""
         await asyncio.sleep(seconds)
         return f"Slept for {seconds} seconds"
+
+    @server.tool
+    async def greet_with_progress(name: str, ctx: Context) -> str:
+        """Report progress for a greeting."""
+        await ctx.report_progress(0.5, 1.0, "Greeting in progress")
+        await ctx.report_progress(0.75, 1.0, "Almost there!")
+        return f"Hello, {name}!"
 
     # Add a resource
     @server.resource(uri="data://users")
@@ -63,8 +82,10 @@ def fastmcp_server():
     return server
 
 
-def run_server(host: str, port: int, **kwargs) -> None:
-    fastmcp_server().run(host=host, port=port, **kwargs)
+def run_server(host: str, port: int, stateless_http: bool = False, **kwargs) -> None:
+    server = fastmcp_server()
+    server.settings.stateless_http = stateless_http
+    server.run(host=host, port=port, **kwargs)
 
 
 def run_nested_server(host: str, port: int) -> None:
@@ -87,8 +108,22 @@ def run_nested_server(host: str, port: int) -> None:
     server.run()
 
 
-@pytest.fixture(scope="module")
-def streamable_http_server() -> Generator[str, None, None]:
+@pytest.fixture()
+async def streamable_http_server(
+    request,
+) -> AsyncGenerator[str, None]:
+    stateless_http = getattr(request, "param", False)
+    with run_server_in_process(
+        run_server, stateless_http=stateless_http, transport="http"
+    ) as url:
+        yield f"{url}/mcp"
+
+
+@pytest.fixture()
+async def streamable_http_server_with_streamable_http_alias() -> AsyncGenerator[
+    str, None
+]:
+    """Test that the "streamable-http" transport alias works."""
     with run_server_in_process(run_server, transport="streamable-http") as url:
         yield f"{url}/mcp"
 
@@ -97,6 +132,19 @@ async def test_ping(streamable_http_server: str):
     """Test pinging the server."""
     async with Client(
         transport=StreamableHttpTransport(streamable_http_server)
+    ) as client:
+        result = await client.ping()
+        assert result is True
+
+
+async def test_ping_with_streamable_http_alias(
+    streamable_http_server_with_streamable_http_alias: str,
+):
+    """Test pinging the server."""
+    async with Client(
+        transport=StreamableHttpTransport(
+            streamable_http_server_with_streamable_http_alias
+        )
     ) as client:
         result = await client.ping()
         assert result is True
@@ -113,6 +161,45 @@ async def test_http_headers(streamable_http_server: str):
         json_result = json.loads(raw_result[0].text)  # type: ignore[attr-defined]
         assert "x-demo-header" in json_result
         assert json_result["x-demo-header"] == "ABC"
+
+
+@pytest.mark.parametrize("streamable_http_server", [True, False], indirect=True)
+async def test_greet_with_progress_tool(streamable_http_server: str):
+    """Test calling the greet tool."""
+    progress_handler = AsyncMock(return_value=None)
+
+    async with Client(
+        transport=StreamableHttpTransport(streamable_http_server),
+        progress_handler=progress_handler,
+    ) as client:
+        result = await client.call_tool("greet_with_progress", {"name": "Alice"})
+        assert result.data == "Hello, Alice!"
+
+        progress_handler.assert_has_calls(
+            [
+                call(0.5, 1.0, "Greeting in progress"),
+                call(0.75, 1.0, "Almost there!"),
+            ]
+        )
+
+
+@pytest.mark.parametrize("streamable_http_server", [True, False], indirect=True)
+async def test_elicitation_tool(streamable_http_server: str, request):
+    """Test calling the elicitation tool in both stateless and stateful modes."""
+
+    async def elicitation_handler(message, response_type, params, ctx):
+        return {"value": "Alice"}
+
+    stateless_http = request.node.callspec.params.get("streamable_http_server", False)
+    if stateless_http:
+        pytest.xfail("Elicitation is not supported in stateless HTTP mode")
+
+    async with Client(
+        transport=StreamableHttpTransport(streamable_http_server),
+        elicitation_handler=elicitation_handler,
+    ) as client:
+        result = await client.call_tool("elicit")
+        assert result.data == "You said your name was: Alice!"
 
 
 async def test_nested_streamable_http_server_resolves_correctly():
@@ -138,16 +225,16 @@ class TestTimeout:
         with pytest.raises(McpError, match="Timed out"):
             async with Client(
                 transport=StreamableHttpTransport(streamable_http_server),
-                timeout=0.01,
+                timeout=0.1,
             ) as client:
-                await client.call_tool("sleep", {"seconds": 0.1})
+                await client.call_tool("sleep", {"seconds": 0.2})
 
     async def test_timeout_tool_call(self, streamable_http_server: str):
         async with Client(
             transport=StreamableHttpTransport(streamable_http_server),
         ) as client:
             with pytest.raises(McpError):
-                await client.call_tool("sleep", {"seconds": 0.1}, timeout=0.01)
+                await client.call_tool("sleep", {"seconds": 0.2}, timeout=0.1)
 
     async def test_timeout_tool_call_overrides_client_timeout(
         self, streamable_http_server: str
@@ -157,14 +244,4 @@ class TestTimeout:
             timeout=2,
         ) as client:
             with pytest.raises(McpError):
-                await client.call_tool("sleep", {"seconds": 0.1}, timeout=0.01)
-
-    async def test_timeout_client_timeout_overrides_tool_call_timeout_if_lower(
-        self, streamable_http_server: str
-    ):
-        with pytest.raises(McpError):
-            async with Client(
-                transport=StreamableHttpTransport(streamable_http_server),
-                timeout=0.01,
-            ) as client:
-                await client.call_tool("sleep", {"seconds": 0.1}, timeout=2)
+                await client.call_tool("sleep", {"seconds": 0.2}, timeout=0.1)
