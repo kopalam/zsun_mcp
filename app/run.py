@@ -54,7 +54,7 @@ class FastMCPAPIServer:
         self.app = FastMCP("FastMCP API Server")
         self.plugins = []
         self.server_key = os.getenv("SERVER_KEY", "default_key_123456")
-        
+        logger.info(f"Server key: {self.server_key}")
         # Register plugins
         self._register_plugins()
         
@@ -281,11 +281,14 @@ class FastMCPAPIServer:
 
         # 简单的token验证（实际项目中应该使用更安全的加密方式）
         try:
-            # 这里简化处理，实际应该使用AES解密
-            if token == self.server_key:
+            # 处理URL编码问题：将空格转换回加号
+            # 在URL中，+会被解释为空格，所以我们需要将其转换回来
+            decoded_token = token.replace(' ', '+')
+            
+            if decoded_token == self.server_key:
                 return "default_agent"
             else:
-                logger.error(f"token验证失败: {token}")
+                logger.error(f"token验证失败: {token} (decoded: {decoded_token})-------------{self.server_key}")
                 await websocket.close(code=1008, reason="token验证失败")
                 return None
         except Exception as e:
