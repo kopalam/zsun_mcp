@@ -1,9 +1,10 @@
 """Time plugin for FastMCP API service framework."""
 
 import asyncio
+import httpx
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
-import pytz
+from zoneinfo import ZoneInfo
 
 from fastmcp.contrib.mcp_mixin import MCPMixin, mcp_tool
 
@@ -17,9 +18,76 @@ class TimePlugin(MCPMixin):
         self.description = "Real-time time querying plugin"
         self.version = "1.0.0"
     
+    async def fetch_time_worldtimeapi(self, timezone_name: str = "UTC") -> Dict[str, Any]:
+        """Fetch time from WorldTimeAPI with fallback to local time.
+        
+        Args:
+            timezone_name: Timezone name (e.g., 'Asia/Shanghai', 'America/New_York', 'UTC')
+        
+        Returns:
+            Dict containing time information from API or local fallback
+        """
+        # Convert UTC to proper timezone name for API
+        api_timezone = timezone_name if timezone_name.upper() != "UTC" else "Etc/UTC"
+        
+        url = f"https://worldtimeapi.org/api/timezone/{api_timezone}"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=5.0)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                # Parse API response
+                dt_str = data.get("datetime")  # ISO format
+                unixt = data.get("unixtime")
+                utc_offset = data.get("utc_offset")
+                day_of_week = data.get("day_of_week")
+                day_of_year = data.get("day_of_year")
+                week_number = data.get("week_number")
+                
+                # Convert to datetime object for additional formatting
+                dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                
+                return {
+                    "timezone": timezone_name,
+                    "current_time": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    "iso_format": dt.isoformat(),
+                    "timestamp": unixt,
+                    "utc_offset": utc_offset,
+                    "day_of_week": day_of_week,
+                    "day_of_year": day_of_year,
+                    "week_number": week_number,
+                    "source": "WorldTimeAPI"
+                }
+        except Exception as e:
+            # Fallback to local time calculation
+            try:
+                if timezone_name.upper() == "UTC":
+                    tz = timezone.utc
+                else:
+                    tz = ZoneInfo(timezone_name)
+                
+                now = datetime.now(tz)
+                return {
+                    "timezone": timezone_name,
+                    "current_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "iso_format": now.isoformat(),
+                    "timestamp": int(now.timestamp()),
+                    "day_of_week": now.strftime("%A"),
+                    "day_of_year": now.timetuple().tm_yday,
+                    "week_number": now.isocalendar()[1],
+                    "source": "local_fallback",
+                    "api_error": str(e)
+                }
+            except Exception as fallback_error:
+                return {
+                    "error": f"Both API and local time failed: API error: {str(e)}, Local error: {str(fallback_error)}",
+                    "timezone": timezone_name
+                }
+
     @mcp_tool(name="获取当前时间", description="获取指定时区的当前时间")
     async def get_current_time(self, timezone_name: str = "UTC") -> Dict[str, Any]:
-        """Get current time in specified timezone.
+        """Get current time in specified timezone using WorldTimeAPI.
         
         Args:
             timezone_name: Timezone name (e.g., 'Asia/Shanghai', 'America/New_York', 'UTC')
@@ -27,31 +95,7 @@ class TimePlugin(MCPMixin):
         Returns:
             Dict containing time information
         """
-        try:
-            # Get timezone object
-            if timezone_name.upper() == "UTC":
-                tz = timezone.utc
-            else:
-                tz = pytz.timezone(timezone_name)
-            
-            # Get current time in specified timezone
-            now = datetime.now(tz)
-            
-            return {
-                "timezone": timezone_name,
-                "current_time": now.strftime("%Y-%m-%d %H:%M:%S"),
-                "iso_format": now.isoformat(),
-                "timestamp": int(now.timestamp()),
-                "day_of_week": now.strftime("%A"),
-                "day_of_year": now.timetuple().tm_yday,
-                "week_number": now.isocalendar()[1],
-                "is_dst": now.dst() != timezone.utc.localize(datetime.min).dst() if hasattr(now, 'dst') else False
-            }
-        except Exception as e:
-            return {
-                "error": f"Invalid timezone '{timezone_name}': {str(e)}",
-                "available_timezones": "Use 'list_timezones' to see available timezones"
-            }
+        return await self.fetch_time_worldtimeapi(timezone_name)
     
     # @mcp_tool(name="列出常用时区", description="获取常用时区列表")
     # async def list_common_timezones(self) -> Dict[str, Any]:

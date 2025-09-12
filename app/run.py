@@ -69,7 +69,7 @@ class FastMCPAPIServer:
         self._register_plugin(weather_plugin)
         
         # Register time plugin
-        # self._register_plugin(time_plugin)
+        self._register_plugin(time_plugin)
         
         logger.info(f"Registered {len(self.plugins)} plugins")
 
