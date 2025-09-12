@@ -251,6 +251,6 @@ class TimePlugin(MCPMixin):
         
         return {
             "world_clock": world_times,
-            "query_time_utc": datetime.now(timezone.utc).isoformat(),a
+            "query_time_utc": datetime.now(timezone.utc).isoformat(),
             "total_timezones": len(timezones)
         }
