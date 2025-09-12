@@ -5,6 +5,7 @@ WebSocket处理器
 
 import json
 import logging
+import asyncio
 from typing import Optional, Union
 from core.connection_manager import connection_manager
 from utils.jsonrpc import (
@@ -31,7 +32,7 @@ class WebSocketHandler:
     def __init__(self, mcp_server=None):
         self.mcp_server = mcp_server
 
-    async def _handle_tool_message(self, agent_id: str, message: str):
+    async def _handle_tool_message(self, agent_id: str, message: str, websocket=None):
         """处理工具端消息"""
         try:
             # 解析消息
@@ -48,14 +49,40 @@ class WebSocketHandler:
                 
                 if is_mcp:
                     logger.info("检测到MCP协议请求，直接处理")
-                    # 直接处理MCP协议请求
-                    response = await self._handle_mcp_request(message_data)
-                    if response:
-                        logger.info(f"发送MCP响应: {response}")
-                        # 发送响应给工具端
-                        await connection_manager.forward_to_tool(
-                            agent_id, json.dumps(response, ensure_ascii=False, cls=MCPJSONEncoder)
+                    # 直接处理MCP协议请求，添加10秒超时
+                    try:
+                        response = await asyncio.wait_for(
+                            self._handle_mcp_request(message_data), 
+                            timeout=10.0
                         )
+                        if response:
+                            logger.info(f"发送MCP响应: {response}")
+                            # 如果有WebSocket连接，直接发送响应
+                            if websocket:
+                                await websocket.send_text(json.dumps(response, ensure_ascii=False, cls=MCPJSONEncoder))
+                            else:
+                                # 否则通过连接管理器转发（保持向后兼容）
+                                await connection_manager.forward_to_tool(
+                                    agent_id, json.dumps(response, ensure_ascii=False, cls=MCPJSONEncoder)
+                                )
+                    except asyncio.TimeoutError:
+                        logger.error("MCP请求处理超时（10秒）")
+                        # 发送超时错误响应
+                        timeout_response = {
+                            "jsonrpc": "2.0",
+                            "id": message_data.get("id"),
+                            "error": {
+                                "code": -32603,
+                                "message": "Internal error",
+                                "data": {"detail": "Request timeout after 10 seconds"}
+                            }
+                        }
+                        if websocket:
+                            await websocket.send_text(json.dumps(timeout_response, ensure_ascii=False))
+                        else:
+                            await connection_manager.forward_to_tool(
+                                agent_id, json.dumps(timeout_response, ensure_ascii=False)
+                            )
                     return
                 
                 # 还原JSON-RPC ID并获取目标连接UUID
@@ -82,22 +109,63 @@ class WebSocketHandler:
             logger.error(f"处理工具端消息时发生错误: {e}")
 
     async def _handle_robot_message(
-        self, agent_id: str, message: str, connection_uuid: str
+        self, agent_id: str, message: str, connection_uuid: str, websocket=None
     ):
-        """处理小智端消息"""
+        """处理小智端消息 - 支持直接MCP协议处理"""
         try:
             # 解析消息
-            logger.debug(
-                f"收到小智端消息: {agent_id} (UUID: {connection_uuid}) - {message}"
-            )
+            logger.info(f"收到小智端消息: {agent_id} (UUID: {connection_uuid}) - {message}")
 
-            # 尝试解析JSON-RPC消息以获取id
-            request_id = None
-            transformed_message = message
+            # 尝试解析JSON-RPC消息
             try:
                 message_data = json.loads(message)
-                request_id = message_data.get("id")
+                
+                # 检查是否是MCP协议请求
+                logger.info(f"检查MCP请求: method={message_data.get('method')}, jsonrpc={message_data.get('jsonrpc')}")
+                is_mcp = self._is_mcp_request(message_data)
+                logger.info(f"MCP请求检查结果: {is_mcp}")
+                
+                if is_mcp:
+                    logger.info("检测到MCP协议请求，直接处理")
+                    # 直接处理MCP协议请求，添加10秒超时
+                    try:
+                        response = await asyncio.wait_for(
+                            self._handle_mcp_request(message_data), 
+                            timeout=10.0
+                        )
+                        if response:
+                            logger.info(f"发送MCP响应: {response}")
+                            # 如果有WebSocket连接，直接发送响应
+                            if websocket:
+                                await websocket.send_text(json.dumps(response, ensure_ascii=False, cls=MCPJSONEncoder))
+                            else:
+                                # 否则通过连接管理器转发
+                                await connection_manager.forward_to_robot_by_uuid(
+                                    connection_uuid, json.dumps(response, ensure_ascii=False, cls=MCPJSONEncoder)
+                                )
+                    except asyncio.TimeoutError:
+                        logger.error("MCP请求处理超时（10秒）")
+                        # 发送超时错误响应
+                        timeout_response = {
+                            "jsonrpc": "2.0",
+                            "id": message_data.get("id"),
+                            "error": {
+                                "code": -32603,
+                                "message": "Internal error",
+                                "data": {"detail": "Request timeout after 10 seconds"}
+                            }
+                        }
+                        if websocket:
+                            await websocket.send_text(json.dumps(timeout_response, ensure_ascii=False))
+                        else:
+                            await connection_manager.forward_to_robot_by_uuid(
+                                connection_uuid, json.dumps(timeout_response, ensure_ascii=False)
+                            )
+                    return
 
+                # 如果不是MCP请求，按原来的方式处理（转发给工具端）
+                request_id = message_data.get("id")
+                
                 # 转换JSON-RPC ID
                 transformed_message_data = connection_manager.transform_jsonrpc_message(
                     message_data, connection_uuid
@@ -110,31 +178,46 @@ class WebSocketHandler:
                     f"转换后的消息ID: {message_data.get('id')} -> {transformed_message_data.get('id')}"
                 )
 
+                # 检查是否有对应的工具端连接
+                if not connection_manager.is_tool_connected(agent_id):
+                    logger.warning(f"工具端未连接: {agent_id}")
+                    # 发送JSON-RPC格式的错误消息给小智端
+                    error_message = create_tool_not_connected_error(request_id, agent_id)
+                    if websocket:
+                        await websocket.send_text(error_message)
+                    else:
+                        await connection_manager.forward_to_robot_by_uuid(
+                            connection_uuid, error_message
+                        )
+                    return
+
+                # 转发转换后的消息给工具端
+                success = await connection_manager.forward_to_tool(
+                    agent_id, transformed_message
+                )
+                if not success:
+                    logger.error(f"转发消息给工具端失败: {agent_id}")
+                    # 发送JSON-RPC格式的错误消息给小智端
+                    error_message = create_forward_failed_error(request_id, agent_id)
+                    if websocket:
+                        await websocket.send_text(error_message)
+                    else:
+                        await connection_manager.forward_to_robot_by_uuid(
+                            connection_uuid, error_message
+                        )
+
             except json.JSONDecodeError:
                 logger.warning(f"小智端消息不是有效的JSON格式: {message}")
                 # 如果消息不是JSON格式，仍然检查工具端连接状态
-
-            # 检查是否有对应的工具端连接
-            if not connection_manager.is_tool_connected(agent_id):
-                logger.warning(f"工具端未连接: {agent_id}")
-                # 发送JSON-RPC格式的错误消息给小智端
-                error_message = create_tool_not_connected_error(request_id, agent_id)
-                await connection_manager.forward_to_robot_by_uuid(
-                    connection_uuid, error_message
-                )
-                return
-
-            # 转发转换后的消息给工具端
-            success = await connection_manager.forward_to_tool(
-                agent_id, transformed_message
-            )
-            if not success:
-                logger.error(f"转发消息给工具端失败: {agent_id}")
-                # 发送JSON-RPC格式的错误消息给小智端
-                error_message = create_forward_failed_error(request_id, agent_id)
-                await connection_manager.forward_to_robot_by_uuid(
-                    connection_uuid, error_message
-                )
+                if not connection_manager.is_tool_connected(agent_id):
+                    logger.warning(f"工具端未连接: {agent_id}")
+                    error_message = create_tool_not_connected_error(None, agent_id)
+                    if websocket:
+                        await websocket.send_text(error_message)
+                    else:
+                        await connection_manager.forward_to_robot_by_uuid(
+                            connection_uuid, error_message
+                        )
 
         except json.JSONDecodeError:
             logger.error(f"小智端消息格式错误: {message}")
@@ -177,63 +260,92 @@ class WebSocketHandler:
         return is_mcp_method
 
     async def _handle_mcp_request(self, message_data: dict) -> Optional[dict]:
-        """处理MCP协议请求"""
+        """处理MCP协议请求 - 符合MCP 2024-11-05协议标准"""
         if not self.mcp_server:
             logger.error("MCP服务器未初始化")
-            return None
+            return self._create_error_response(
+                message_data.get("id"), -32603, "Internal error", "MCP服务器未初始化"
+            )
         
         try:
             method = message_data.get("method")
             request_id = message_data.get("id")
             params = message_data.get("params", {})
             
-            logger.info(f"处理MCP请求: {method}")
+            logger.info(f"处理MCP请求: {method}, ID: {request_id}")
             
-            if method == "tools/list":
-                # 获取工具列表
-                logger.info("开始获取工具列表...")
-                tools = await self.mcp_server._list_tools()
-                logger.info(f"获取到 {len(tools)} 个工具")
-                
-                # 调试：检查工具管理器中的工具
-                tool_manager_tools = await self.mcp_server._tool_manager.get_tools()
-                logger.info(f"工具管理器中有 {len(tool_manager_tools)} 个工具: {list(tool_manager_tools.keys())}")
-                
-                mcp_tools = []
-                for tool in tools:
-                    mcp_tool = {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "inputSchema": tool.parameters
-                    }
-                    mcp_tools.append(mcp_tool)
-                    logger.info(f"工具: {tool.name} - {tool.description}")
-                
+            if method == "initialize":
+                # MCP协议初始化响应 - 符合标准格式
+                logger.info("处理MCP初始化请求")
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {
-                        "tools": mcp_tools
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {
+                            "roots": {
+                                "listChanged": False
+                            },
+                            "sampling": {}
+                        },
+                        "serverInfo": {
+                            "name": "fastmcp-api-server",
+                            "version": "1.0.0"
+                        }
                     }
                 }
             
+            elif method == "notifications/initialized":
+                # 初始化完成通知，不需要返回响应
+                logger.info("收到MCP初始化完成通知，不返回响应")
+                return None
+            
+            elif method == "tools/list":
+                # 获取工具列表 - 返回标准MCP工具格式
+                logger.info("开始获取工具列表...")
+                try:
+                    tools = await self.mcp_server._list_tools()
+                    logger.info(f"获取到 {len(tools)} 个工具")
+                    
+                    mcp_tools = []
+                    for tool in tools:
+                        # 转换为标准MCP工具格式
+                        mcp_tool = {
+                            "name": tool.name,
+                            "description": tool.description or f"工具: {tool.name}",
+                            "inputSchema": tool.parameters or {
+                                "type": "object",
+                                "properties": {},
+                                "required": []
+                            }
+                        }
+                        mcp_tools.append(mcp_tool)
+                        logger.info(f"工具: {tool.name} - {tool.description}")
+                    
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "tools": mcp_tools
+                        }
+                    }
+                except Exception as e:
+                    logger.error(f"获取工具列表失败: {e}")
+                    return self._create_error_response(
+                        request_id, -32603, "Internal error", f"获取工具列表失败: {str(e)}"
+                    )
+            
             elif method == "tools/call":
-                # 调用工具
+                # 调用工具 - 支持标准MCP参数格式
                 logger.info(f"处理工具调用请求: {method}")
                 tool_name = params.get("name")
                 arguments = params.get("arguments", {})
                 logger.info(f"工具名称: {tool_name}, 参数: {arguments}")
                 
                 if not tool_name:
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {
-                            "code": -32602,
-                            "message": "Invalid params",
-                            "data": {"detail": "Missing tool name"}
-                        }
-                    }
+                    return self._create_error_response(
+                        request_id, -32602, "Invalid params", "Missing tool name"
+                    )
                 
                 try:
                     # 创建并设置上下文
@@ -244,10 +356,10 @@ class WebSocketHandler:
                         result = await self.mcp_server._call_tool(tool_name, arguments)
                         mcp_result = result.to_mcp_result()
                     
-                    # 处理MCP结果格式
+                    # 处理MCP结果格式 - 符合标准
                     if isinstance(mcp_result, tuple):
                         content, structured_content = mcp_result
-                        # 将TextContent对象转换为可序列化的格式
+                        # 将ContentBlock对象转换为可序列化的格式
                         serializable_content = []
                         if content:
                             for item in content:
@@ -275,39 +387,37 @@ class WebSocketHandler:
                         "result": response_result
                     }
                 except Exception as e:
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {
-                            "code": -32603,
-                            "message": "Internal error",
-                            "data": {"detail": str(e)}
-                        }
-                    }
+                    logger.error(f"工具调用失败: {e}")
+                    return self._create_error_response(
+                        request_id, -32603, "Internal error", f"工具调用失败: {str(e)}"
+                    )
             
             else:
                 # 其他方法暂不支持
-                return {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32601,
-                        "message": "Method not found",
-                        "data": {"method": method}
-                    }
-                }
+                logger.warning(f"不支持的MCP方法: {method}")
+                return self._create_error_response(
+                    request_id, -32601, "Method not found", f"不支持的方法: {method}"
+                )
                 
         except Exception as e:
             logger.error(f"处理MCP请求时发生错误: {e}")
-            return {
-                "jsonrpc": "2.0",
-                "id": message_data.get("id"),
-                "error": {
-                    "code": -32603,
-                    "message": "Internal error",
-                    "data": {"detail": str(e)}
-                }
+            return self._create_error_response(
+                message_data.get("id"), -32603, "Internal error", str(e)
+            )
+    
+    def _create_error_response(self, request_id: any, code: int, message: str, data: str = None) -> dict:
+        """创建标准JSON-RPC错误响应"""
+        error_response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": code,
+                "message": message
             }
+        }
+        if data:
+            error_response["error"]["data"] = data
+        return error_response
 
 
 # 全局WebSocket处理器实例

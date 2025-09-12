@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 class FastMCPAPIServer:
     """Main FastMCP API server that manages plugins and provides MCP services."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8010):
+    def __init__(self, host: str = "0.0.0.0", port: int = 7100):
         """Initialize the server.
         
         Args:
@@ -186,7 +186,7 @@ class FastMCPAPIServer:
             allow_headers=["*"],
         )
         
-        # Add WebSocket endpoints
+        # Add WebSocket endpoints - 支持MCP协议标准路径
         @app.websocket("/mcp_endpoint/mcp/")
         async def websocket_tool_endpoint(websocket: WebSocket):
             await self.websocket_tool_endpoint(websocket)
@@ -194,6 +194,11 @@ class FastMCPAPIServer:
         @app.websocket("/mcp_endpoint/call/")
         async def websocket_robot_endpoint(websocket: WebSocket):
             await self.websocket_robot_endpoint(websocket)
+        
+        # Add MCP protocol endpoint - 符合MCP 2024-11-05协议标准
+        @app.websocket("/mcp_endpoint/protocol/")
+        async def websocket_mcp_protocol_endpoint(websocket: WebSocket):
+            await self.websocket_mcp_protocol_endpoint(websocket)
         
         # Add health check endpoint
         @app.get("/mcp_endpoint/health")
@@ -318,7 +323,7 @@ class FastMCPAPIServer:
                 try:
                     message = await websocket.receive_text()
                     logger.info(f"工具端收到原始消息: {message}")
-                    await websocket_handler._handle_tool_message(agent_id, message)
+                    await websocket_handler._handle_tool_message(agent_id, message, websocket)
                 except WebSocketDisconnect:
                     logger.info("🔌 WebSocket连接断开")
                     break
@@ -355,7 +360,7 @@ class FastMCPAPIServer:
                 try:
                     message = await websocket.receive_text()
                     await websocket_handler._handle_robot_message(
-                        agent_id, message, connection_uuid
+                        agent_id, message, connection_uuid, websocket
                     )
                 except WebSocketDisconnect:
                     break
@@ -368,6 +373,92 @@ class FastMCPAPIServer:
         finally:
             await connection_manager.unregister_robot_connection(connection_uuid)
             logger.info(f"小智端连接已关闭: {agent_id} (UUID: {connection_uuid})")
+
+    async def websocket_mcp_protocol_endpoint(self, websocket: WebSocket):
+        """MCP协议WebSocket端点 - 符合MCP 2024-11-05协议标准"""
+        logger.info("🔌 MCP协议WebSocket端点被调用")
+        await websocket.accept()
+        logger.info("✅ MCP协议WebSocket连接已接受")
+
+        try:
+            # 处理MCP协议消息，支持10秒超时
+            while True:
+                try:
+                    # 设置10秒超时接收消息
+                    message = await asyncio.wait_for(
+                        websocket.receive_text(), 
+                        timeout=10.0
+                    )
+                    logger.info(f"收到MCP协议消息: {message}")
+                    
+                    # 解析JSON-RPC消息
+                    try:
+                        message_data = json.loads(message)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"MCP协议消息JSON解析失败: {e}")
+                        error_response = {
+                            "jsonrpc": "2.0",
+                            "id": None,
+                            "error": {
+                                "code": -32700,
+                                "message": "Parse error"
+                            }
+                        }
+                        await websocket.send_text(json.dumps(error_response))
+                        continue
+                    
+                    # 处理MCP请求，设置10秒超时
+                    try:
+                        response = await asyncio.wait_for(
+                            websocket_handler._handle_mcp_request(message_data),
+                            timeout=10.0
+                        )
+                        
+                        # 发送响应（如果有的话）
+                        if response is not None:
+                            logger.info(f"发送MCP协议响应: {json.dumps(response, ensure_ascii=False)}")
+                            await websocket.send_text(json.dumps(response, ensure_ascii=False))
+                        else:
+                            logger.info("MCP协议请求不需要响应（通知类型）")
+                            
+                    except asyncio.TimeoutError:
+                        logger.error("MCP请求处理超时（10秒）")
+                        # 发送超时错误响应
+                        timeout_response = {
+                            "jsonrpc": "2.0",
+                            "id": message_data.get("id"),
+                            "error": {
+                                "code": -32603,
+                                "message": "Internal error",
+                                "data": {"detail": "Request timeout after 10 seconds"}
+                            }
+                        }
+                        await websocket.send_text(json.dumps(timeout_response, ensure_ascii=False))
+                        
+                except asyncio.TimeoutError:
+                    logger.warning("WebSocket消息接收超时（10秒），保持连接")
+                    continue
+                except WebSocketDisconnect:
+                    logger.info("MCP协议WebSocket连接已断开")
+                    break
+                except Exception as e:
+                    logger.error(f"处理MCP协议消息时发生错误: {e}")
+                    # 发送错误响应
+                    error_response = {
+                        "jsonrpc": "2.0",
+                        "id": message_data.get("id") if 'message_data' in locals() else None,
+                        "error": {
+                            "code": -32603,
+                            "message": "Internal error",
+                            "data": {"detail": str(e)}
+                        }
+                    }
+                    await websocket.send_text(json.dumps(error_response))
+                    
+        except Exception as e:
+            logger.error(f"处理MCP协议连接时发生错误: {e}")
+        finally:
+            logger.info("MCP协议WebSocket连接已关闭")
 
 
 def main():
