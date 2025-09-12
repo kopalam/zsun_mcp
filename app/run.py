@@ -77,14 +77,23 @@ class FastMCPAPIServer:
             plugin: Plugin instance to register.
         """
         try:
-            tools = plugin.tools()
-            registered_count = 0
-            
-            for tool in tools:
-                # Register the tool with the MCP server
-                self.app.tool(tool)
-                registered_count += 1
-                logger.info(f"Registered tool: {tool.__name__} from plugin: {plugin.name}")
+            # Check if plugin uses MCPMixin
+            from fastmcp.contrib.mcp_mixin import MCPMixin
+            if isinstance(plugin, MCPMixin):
+                # Use MCPMixin registration
+                plugin.register_tools(self.app)
+                registered_count = len(plugin._get_methods_to_register("_mcp_tool_registration"))
+                logger.info(f"Registered {registered_count} tools from MCPMixin plugin: {plugin.name}")
+            else:
+                # Use traditional tools() method
+                tools = plugin.tools()
+                registered_count = 0
+                
+                for tool in tools:
+                    # Register the tool with the MCP server
+                    self.app.tool(tool)
+                    registered_count += 1
+                    logger.info(f"Registered tool: {tool.__name__} from plugin: {plugin.name}")
             
             self.plugins.append(plugin)
             logger.info(f"Successfully registered plugin '{plugin.name}' with {registered_count} tools")

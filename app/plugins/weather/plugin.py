@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from plugins.base import BasePlugin
+from fastmcp.contrib.mcp_mixin import mcp_tool, MCPMixin
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class WeatherRequest(BaseModel):
     city: str = Field(..., description="City name to get weather for")
 
 
-class WeatherPlugin(BasePlugin):
+class WeatherPlugin(BasePlugin, MCPMixin):
     """Weather plugin that provides weather information for cities."""
 
     def __init__(self):
@@ -39,6 +40,7 @@ class WeatherPlugin(BasePlugin):
         """Return the list of weather-related tools."""
         return [self.get_weather]
 
+    @mcp_tool(name="实时天气查询", description="获取指定城市的当前天气信息")
     async def get_weather(self, city: str) -> Dict[str, Any]:
         """Get current weather information for a city.
         
