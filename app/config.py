@@ -17,7 +17,7 @@ class Config:
         self.debug = os.getenv("DEBUG", "false").lower() == "true"
         
         # WebSocket配置
-        self.server_key = os.getenv("SERVER_KEY", "default_key_123456")
+        self.server_key = os.getenv("SERVER_KEY", "v%2BGNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs%2FpFuup38CTerac1ML7TeIgmI")
         self.enable_cors = os.getenv("ENABLE_CORS", "true").lower() == "true"
         self.allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
         
