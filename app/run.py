@@ -311,14 +311,21 @@ class FastMCPAPIServer:
 
         # 简单的token验证（实际项目中应该使用更安全的加密方式）
         try:
-            # 处理URL编码问题：将空格转换回加号
+            import urllib.parse
+            
+            # 处理URL编码问题：先URL解码，然后处理空格转加号的问题
             # 在URL中，+会被解释为空格，所以我们需要将其转换回来
             decoded_token = token.replace(' ', '+')
+            # 然后进行URL解码
+            decoded_token = urllib.parse.unquote(decoded_token)
             
-            if decoded_token == self.server_key:
+            # 同样处理服务器端的key
+            server_key_decoded = urllib.parse.unquote(self.server_key)
+            
+            if decoded_token == server_key_decoded:
                 return "default_agent"
             else:
-                logger.error(f"token验证失败: {token} (decoded: {decoded_token})-------------{self.server_key}")
+                logger.error(f"token验证失败: {token} (decoded: {decoded_token})-------------{self.server_key} (decoded: {server_key_decoded})")
                 await websocket.close(code=1008, reason="token验证失败")
                 return None
         except Exception as e:
