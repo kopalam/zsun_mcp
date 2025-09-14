@@ -55,25 +55,26 @@ class FastMCPAPIServer:
         self.plugins = []
         self.server_key = os.getenv("SERVER_KEY", "default_key_123456")
         logger.info(f"Server key: {self.server_key}")
-        # Register plugins
-        self._register_plugins()
-        
         # 初始化WebSocket处理器并传递MCP服务器
         websocket_handler.mcp_server = self.app
 
-    def _register_plugins(self):
+    async def initialize(self):
+        """Initialize the server and register plugins."""
+        await self._register_plugins()
+
+    async def _register_plugins(self):
         """Register all available plugins with the MCP server."""
         logger.info("Registering plugins...")
         
         # Register weather plugin
-        self._register_plugin(weather_plugin)
+        await self._register_plugin(weather_plugin)
         
         # Register time plugin
-        # self._register_plugin(time_plugin)
+        # await self._register_plugin(time_plugin)
         
         logger.info(f"Registered {len(self.plugins)} plugins")
 
-    def _register_plugin(self, plugin):
+    async def _register_plugin(self, plugin):
         """Register a single plugin with the MCP server.
         
         Args:
@@ -100,6 +101,14 @@ class FastMCPAPIServer:
             
             self.plugins.append(plugin)
             logger.info(f"Successfully registered plugin '{plugin.name}' with {registered_count} tools")
+            
+            # Initialize plugin if it has an initialize method
+            if hasattr(plugin, 'initialize') and callable(getattr(plugin, 'initialize')):
+                try:
+                    await plugin.initialize()
+                    logger.info(f"Plugin '{plugin.name}' initialized successfully")
+                except Exception as e:
+                    logger.error(f"Failed to initialize plugin '{plugin.name}': {str(e)}")
             
         except Exception as e:
             logger.error(f"Failed to register plugin '{plugin.name}': {str(e)}")
@@ -163,7 +172,8 @@ class FastMCPAPIServer:
         """Run the server with SSE transport."""
         logger.info(f"Starting FastMCP server with SSE transport on {self.host}:{self.port}")
         
-        # Print server information
+        # Initialize server and print server information
+        asyncio.run(self.initialize())
         asyncio.run(self.print_server_info())
         
         # Start the server
@@ -173,7 +183,8 @@ class FastMCPAPIServer:
         """Run the server with stdio transport."""
         logger.info("Starting FastMCP server with stdio transport")
         
-        # Print server information
+        # Initialize server and print server information
+        asyncio.run(self.initialize())
         asyncio.run(self.print_server_info())
         
         # Start the server
@@ -183,7 +194,8 @@ class FastMCPAPIServer:
         """Run the server with WebSocket transport."""
         logger.info(f"Starting FastMCP server with WebSocket transport on {self.host}:{self.port}")
         
-        # Print server information
+        # Initialize server and print server information
+        asyncio.run(self.initialize())
         asyncio.run(self.print_server_info())
         
         # Create FastAPI app with WebSocket endpoints
@@ -234,7 +246,8 @@ class FastMCPAPIServer:
         """Run the server with both SSE and WebSocket transport."""
         logger.info(f"Starting FastMCP server with dual transport (SSE + WebSocket) on {self.host}:{self.port}")
         
-        # Print server information
+        # Initialize server and print server information
+        asyncio.run(self.initialize())
         asyncio.run(self.print_server_info())
         
         # Import required modules

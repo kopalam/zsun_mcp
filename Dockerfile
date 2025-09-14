@@ -20,7 +20,7 @@ COPY app/ /app/
 RUN pip install --no-cache-dir -e . -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # 暴露端口（如果需要的话）
-EXPOSE 8010
+EXPOSE 7100
 
 # 设置启动命令
 CMD ["python", "run.py"] 
