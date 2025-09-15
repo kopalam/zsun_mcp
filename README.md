@@ -1,6 +1,6 @@
-# FastMCP API Service Framework
+# ZsunMcp API Service Framework
 
-一个基于 **FastMCP** 的插件化 MCP Server 框架，支持 **Websocket/SSE/HTTP** 传输，采用模块化架构设计。
+ZsunMcp是基于 **FastMCP** 的插件化 MCP Server 框架，支持 **Websocket/SSE/HTTP** 传输，采用模块化架构设计。
 
 ## 🚀 特性
 
@@ -53,15 +53,32 @@ tests/                          # 测试目录
 
 
 ## 对接xinnan-xiaozhi-server
-1. 参数字典 - 参数管理 - 找到 【server.mcp_endpoint】
-写入参数值如
+
+### 1. 配置MCP端点
+在参数字典 → 参数管理中找到 `server.mcp_endpoint`，设置参数值为：
 ```
 http://192.168.0.126:7100/mcp_endpoint/health?key=d997b2566104484d80923ca484dd5a73
 ```
-2.在智能体管理的意图识别中，复制 ws://192.168.0.126:7100/mcp_endpoint/mcp/?token=v%2BGNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs%2FpFuup38CTerac1ML7TeIgmI中的
-token字段到.env 文件，
-其中 v%2B 是base64编码的结果，需要为 v+/，即完整的token是v+/GNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs%2FpFuup38CTerac1ML7TeIgmI复制到.env的SERVER_KEY="v+GNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs/pFuup38CTerac1ML7TeIgmI"。
-如果没有env，在app中新建一个即可。
+
+### 2. 配置认证Token
+在智能体管理的意图识别中，找到WebSocket连接地址：
+```
+ws://192.168.0.126:7100/mcp_endpoint/mcp/?token=v%2BGNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs%2FpFuup38CTerac1ML7TeIgmI
+```
+
+**重要说明：**
+- URL中的 `%2B` 是URL编码的 `+` 号
+- URL中的 `%2F` 是URL编码的 `/` 号
+- 需要将token解码后写入 `.env` 文件
+
+**操作步骤：**
+1. 从URL中提取token：`v%2BGNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs%2FpFuup38CTerac1ML7TeIgmI`
+2. URL解码后得到：`v+GNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs/pFuup38CTerac1ML7TeIgmI`
+3. 在 `app/.env` 文件中添加：
+   ```
+   SERVER_KEY="v+GNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs/pFuup38CTerac1ML7TeIgmI"
+   ```
+4. 如果 `app/.env` 文件不存在，请先创建该文件
 
 ## 🚀 快速开始
 
@@ -314,18 +331,7 @@ python app/run.py
 ## 🙏 致谢
 
 - [FastMCP](https://github.com/fastmcp/fastmcp) - MCP 框架
-- [Open-Meteo](https://open-meteo.com/) - 免费天气 API
+- [Open-Meteo](https://OpenWeatherMap.org/) - 免费天气 API
 - [Pydantic](https://pydantic.dev/) - 数据验证
 - [httpx](https://www.python-httpx.org/) - HTTP 客户端
 
-## 📞 支持
-
-如有问题或建议，请：
-
-1. 查看 [Issues](https://github.com/your-repo/issues)
-2. 创建新的 Issue
-3. 联系维护者
-
----
-
-**注意**: 这是一个示例项目，用于演示 FastMCP 框架的使用。在生产环境中使用前，请确保进行充分的安全审查和测试。
