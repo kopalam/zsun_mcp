@@ -313,19 +313,21 @@ class FastMCPAPIServer:
         try:
             import urllib.parse
             
-            # 处理URL编码问题：先URL解码，然后处理空格转加号的问题
-            # 在URL中，+会被解释为空格，所以我们需要将其转换回来
-            decoded_token = token.replace(' ', '+')
-            # 然后进行URL解码
-            decoded_token = urllib.parse.unquote(decoded_token)
+            # 直接进行URL解码，不需要处理空格转加号的问题
+            # 因为urllib.parse.unquote会自动处理%2B为+号
+            decoded_token = urllib.parse.unquote(token)
             
             # 同样处理服务器端的key
             server_key_decoded = urllib.parse.unquote(self.server_key)
             
+            logger.info(f"Token验证: 客户端token={token} -> 解码后={decoded_token}")
+            logger.info(f"Token验证: 服务器key={self.server_key} -> 解码后={server_key_decoded}")
+            
             if decoded_token == server_key_decoded:
+                logger.info("✅ Token验证成功")
                 return "default_agent"
             else:
-                logger.error(f"token验证失败: {token} (decoded: {decoded_token})-------------{self.server_key} (decoded: {server_key_decoded})")
+                logger.error(f"❌ Token验证失败: 客户端token解码后={decoded_token}, 服务器key解码后={server_key_decoded}")
                 await websocket.close(code=1008, reason="token验证失败")
                 return None
         except Exception as e:

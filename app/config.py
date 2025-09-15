@@ -25,9 +25,8 @@ class Config:
         self.log_level = os.getenv("LOG_LEVEL", "INFO").upper()
         
         # 插件配置
-        self.weather_api_base = os.getenv("WEATHER_API_BASE", "https://api.open-meteo.com/v1")
+        self.weather_api_base = os.getenv("WEATHER_API_BASE", "https://api.openweathermap.org/data/2.5")
         self.weather_api_key = os.getenv("WEATHER_API_KEY")
-        self.geocoding_api_base = os.getenv("GEOCODING_API_BASE", "https://geocoding-api.open-meteo.com/v1")
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
@@ -41,7 +40,6 @@ class Config:
             "log_level": self.log_level,
             "weather_api_base": self.weather_api_base,
             "weather_api_key": self.weather_api_key,
-            "geocoding_api_base": self.geocoding_api_base,
         }
 
     def __str__(self) -> str:

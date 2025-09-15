@@ -1,6 +1,6 @@
 # FastMCP API Service Framework
 
-一个基于 **FastMCP** 的插件化 MCP Server 框架，支持 **SSE/HTTP** 传输，采用模块化架构设计。
+一个基于 **FastMCP** 的插件化 MCP Server 框架，支持 **Websocket/SSE/HTTP** 传输，采用模块化架构设计。
 
 ## 🚀 特性
 
@@ -51,46 +51,24 @@ tests/                          # 测试目录
 - Python 3.10+
 - pip 或 poetry
 
-### 安装依赖
 
-```bash
-# 克隆项目
-git clone <repository-url>
-cd fastmcp-api
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 或者使用开发依赖
-pip install -r requirements.txt[dev]
+## 对接xinnan-xiaozhi-server
+1. 参数字典 - 参数管理 - 找到 【server.mcp_endpoint】
+写入参数值如
 ```
-
-### 环境配置
-
-```bash
-# 复制环境变量示例文件
-cp env.example .env
-
-# 编辑配置文件（可选）
-nano .env
+http://192.168.0.126:7100/mcp_endpoint/health?key=d997b2566104484d80923ca484dd5a73
 ```
+2.在智能体管理的意图识别中，复制 ws://192.168.0.126:7100/mcp_endpoint/mcp/?token=v%2BGNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs%2FpFuup38CTerac1ML7TeIgmI中的
+token字段到.env 文件，
+其中 v%2B 是base64编码的结果，需要为 v+/，即完整的token是v+/GNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs%2FpFuup38CTerac1ML7TeIgmI复制到.env的SERVER_KEY="v+GNdYhqHQJ1drrKS6JJ3W12I2tAWMmimVUgyDHs/pFuup38CTerac1ML7TeIgmI"。
+如果没有env，在app中新建一个即可。
 
 ## 🚀 快速开始
 
 ### 启动服务器
 
 ```bash
-# 使用 SSE 传输（默认）
-python app/run.py
-
-# 使用 stdio 传输
-python app/run.py --transport stdio
-
-# 使用 WebSocket 传输（与 mcp-endpoint-server 兼容）
-python app/run.py --transport websocket
-
-# 自定义主机和端口
-python app/run.py --host 0.0.0.0 --port 8080 --transport websocket
+docker compose up -d
 ```
 
 ### WebSocket 端点
@@ -118,22 +96,8 @@ ALLOWED_ORIGINS=*
 LOG_LEVEL=INFO
 
 # 天气插件配置
-WEATHER_API_BASE=https://api.open-meteo.com/v1
+WEATHER_API_BASE=https://api.openweathermap.org/data/2.5
 WEATHER_API_KEY=your_api_key
-GEOCODING_API_BASE=https://geocoding-api.open-meteo.com/v1
-```
-
-### 测试客户端
-
-```bash
-# 运行演示模式
-python app/weather_client.py
-
-# 运行交互模式
-python app/weather_client.py --mode interactive
-
-# 测试 WebSocket 功能
-python app/websocket_client_test.py
 ```
 
 ## 🔌 WebSocket 兼容性
@@ -163,7 +127,7 @@ import websockets
 import json
 
 async def connect_tool():
-    uri = "ws://localhost:8010/mcp_endpoint/mcp/?token=default_key_123456"
+    uri = "ws://localhost:8010/mcp_endpoint/?token=default_key_123456"
     async with websockets.connect(uri) as websocket:
         # 发送天气查询请求
         request = {
